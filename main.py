@@ -15,7 +15,7 @@ dataset = RecipeDataset(DATA_PATH)
 
 # dataset = RecipeDataset("data/processed_recipes.csv")
 
-# Subset für schnelles Training
+# Subset für schnelles Training, nur 2k statt 100k (glaub ich)
 subset = torch.utils.data.Subset(dataset, range(2000))
 dataloader = DataLoader(subset, batch_size=8, shuffle=True, collate_fn=collate_fn)
 
@@ -23,9 +23,9 @@ print(f"Dataset size: {len(dataset)}")
 print("Input vocab size:", len(dataset.input_vocab))
 print("Target vocab size:", len(dataset.target_vocab))
 
-# -------------------------------
-# Encoder & Decoder
-# -------------------------------
+
+
+# LSTM Encoder & Decoder
 encoder = EncoderRNN(
     input_vocab_size=len(dataset.input_vocab),
     embedding_dim=128,
@@ -42,9 +42,8 @@ decoder = DecoderRNN(
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# -------------------------------
-# Greedy Decode Funktion
-# -------------------------------
+
+# Check during training which recipe titles generate what output (ingredients)
 def greedy_decode_one(model, title_ids, title_len, max_len=15):
     model.eval()
     with torch.no_grad():
@@ -71,9 +70,8 @@ def greedy_decode_one(model, title_ids, title_len, max_len=15):
 
     return out_tokens
 
-# -------------------------------
-# Seq2Seq Modell
-# -------------------------------
+
+# Intialize Encoder and decoder end to end
 class Seq2Seq(nn.Module):
     def __init__(self, encoder, decoder, device, sos_idx, pad_idx):
         super().__init__()
@@ -90,7 +88,6 @@ class Seq2Seq(nn.Module):
         # Encode
         hidden, cell = self.encoder(src, src_length)
 
-        # Output-Container
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
 
         # Start-Token
@@ -110,9 +107,8 @@ class Seq2Seq(nn.Module):
 
         return outputs
 
-# -------------------------------
-# Training Setup
-# -------------------------------
+
+# Training
 model = Seq2Seq(
     encoder=encoder,
     decoder=decoder,
@@ -126,10 +122,8 @@ criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 grad_clip = 1.0
 
-# -------------------------------
-# Training Loop
-# -------------------------------
-num_epochs = 2
+# Train loop
+num_epochs = 20
 for epoch in range(num_epochs):
     model.train()
     total_loss = 0
