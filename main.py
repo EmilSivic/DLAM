@@ -7,10 +7,9 @@ from torch.utils.data import DataLoader
 from model import EncoderRNN, DecoderRNN
 
 
-# -------------------------------
-# Dataset & Dataloader
-# -------------------------------
-dataset = RecipeDataset("data/processed_recipes.csv")
+DATA_PATH = os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
+dataset = RecipeDataset(DATA_PATH)
+# dataset = RecipeDataset("data/processed_recipes.csv")
 
 # Subset für schnelles Training
 subset = torch.utils.data.Subset(dataset, range(2000))
