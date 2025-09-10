@@ -5,10 +5,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from model import EncoderRNN, DecoderRNN
+import os
+from dataset import RecipeDataset, collate_fn
 
-
+DEFAULT_DATA_PATH = "data/processed_recipes.csv"
 DATA_PATH = os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
+
 dataset = RecipeDataset(DATA_PATH)
+
 # dataset = RecipeDataset("data/processed_recipes.csv")
 
 # Subset für schnelles Training
