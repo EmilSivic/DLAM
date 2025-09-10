@@ -1,0 +1,13 @@
+# Ignore dataset files
+*.csv
+data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Checkpoints / Modelle
+*.pt
+*.pth
+checkpoints/
