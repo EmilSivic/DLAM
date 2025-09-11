@@ -219,8 +219,8 @@ if __name__ == "__main__":
     vocab_ds = base_dataset(train_set)
 
     #dataloader
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
-    val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(train_set, batch_size=64, shuffle=True,  collate_fn=collate_fn)
+    val_loader   = DataLoader(val_set,   batch_size=64, shuffle=False, collate_fn=collate_fn)
 
     #models
     enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 128, 1)
