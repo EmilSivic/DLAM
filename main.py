@@ -1,25 +1,24 @@
-import pandas as pd
-from ast import literal_eval
-from dataset import RecipeDataset, collate_fn
+import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
+from dataset import RecipeDataset, collate_fn
 from model import EncoderRNN, DecoderRNN
-import os
 
-# ----------------------
-# Config
-# ----------------------
+# -----------------------------
+# Config / Gerätewahl
+# -----------------------------
 DEFAULT_DATA_PATH = "data/processed_recipes.csv"
 DATA_PATH = os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GRAD_CLIP = 1.0
+CKPT_DIR = os.environ.get("CKPT_DIR", "./checkpoints")
+os.makedirs(CKPT_DIR, exist_ok=True)
 
 
-# ----------------------
-# Seq2Seq Wrapper
-# ----------------------
+# -----------------------------
+# Seq2Seq Wrapper (Encoder+Decoder)
+# -----------------------------
 class Seq2Seq(nn.Module):
     def __init__(self, encoder, decoder, device, sos_idx, pad_idx):
         super().__init__()
@@ -30,73 +29,132 @@ class Seq2Seq(nn.Module):
         self.pad_idx = pad_idx
 
     def forward(self, src, trg, src_length, teacher_forcing_ratio=0.5):
+        """
+        src:  [B, src_len]   (Titel-Token-IDs)
+        trg:  [B, trg_len]   (Zutaten-Token-IDs, inkl. <SOS>/<EOS>)
+        src_length: [B]      (reale Längen der Titel, vor Padding)
+        """
         batch_size, trg_len = trg.size(0), trg.size(1)
         vocab_size = self.decoder.fc_out.out_features
 
+        # Encoder “liest” den Titel und gibt initiale hidden/cell für Decoder
         hidden, cell = self.encoder(src, src_length)
+
+        # Platz für alle Logits über die komplette Ziel-Sequenz
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
 
-        input_token = trg[:, 0].to(self.device)  # <SOS>
+        # Wir starten im Decoder immer mit <SOS> (liegt als trg[:,0] vor)
+        input_token = trg[:, 0].to(self.device)
 
+        # Schrittweise über die Ziel-Länge laufen (Auto-Regressiv)
         for t in range(1, trg_len):
+            # 1) einen Schritt decoden
             step_logits, hidden, cell = self.decoder(input_token, hidden, cell)
-            outputs[:, t, :] = step_logits
+            outputs[:, t, :] = step_logits  # Logits für Zeitpunkt t speichern
 
+            # 2) Teacher Forcing: manchmal nehmen wir das echte nächste Token,
+            #    manchmal die eigene Vorhersage (argmax)
             use_tf = (torch.rand(1).item() < teacher_forcing_ratio)
             if use_tf:
-                input_token = trg[:, t].long()
+                input_token = trg[:, t].long()              # Ground Truth einspeisen
             else:
-                input_token = step_logits.argmax(dim=1)
+                input_token = step_logits.argmax(dim=1)     # Eigene Vorhersage einspeisen
 
         return outputs
 
 
-# ----------------------
-# Greedy Decoding
-# ----------------------
+# -----------------------------
+# Greedy Decoding (nur für Debug/Inference)
+# -----------------------------
+@torch.no_grad()
 def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
+    """
+    Ich gebe dem Decoder nur <SOS> und die Encoder-States.
+    Danach immer das zuletzt vorhergesagte Token wieder rein.
+    """
     model.eval()
-    with torch.no_grad():
-        hidden, cell = model.encoder(title_ids.unsqueeze(0).to(DEVICE),
-                                     title_len.unsqueeze(0))
 
-        sos_idx = dataset.target_vocab.word2idx["<SOS>"]
-        eos_idx = dataset.target_vocab.word2idx["<EOS>"]
-        input_token = torch.tensor([sos_idx], device=DEVICE)
+    # Encoder “liest” den Titel
+    hidden, cell = model.encoder(title_ids.unsqueeze(0).to(DEVICE),
+                                 title_len.unsqueeze(0))
 
-        out_tokens = []
-        for _ in range(max_len):
-            logits, hidden, cell = model.decoder(input_token, hidden, cell)
-            next_id = logits.argmax(dim=1)
-            tok = int(next_id.item())
+    sos_idx = dataset.target_vocab.word2idx["<SOS>"]
+    eos_idx = dataset.target_vocab.word2idx["<EOS>"]
+    input_token = torch.tensor([sos_idx], device=DEVICE)
 
-            if tok == eos_idx:
-                break
-            word = dataset.target_vocab.idx2word.get(tok, "<UNK>")
-            out_tokens.append(word)
-
-            input_token = next_id
+    out_tokens = []
+    for _ in range(max_len):
+        logits, hidden, cell = model.decoder(input_token, hidden, cell)
+        next_id = logits.argmax(dim=1)              # Top-1 wählen
+        tok = int(next_id.item())
+        if tok == eos_idx:                          # Ende der Sequenz
+            break
+        word = dataset.target_vocab.idx2word.get(tok, "<UNK>")
+        out_tokens.append(word)
+        input_token = next_id                       # Autoregressiv füttern
 
     return out_tokens
 
 
-# ----------------------
-# Training Loop
-# ----------------------
-def train(model, dataloader, optimizer, criterion, dataset, num_epochs=10):
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
+# -----------------------------
+# Evaluation: Loss, PPL, Token-Accuracy
+# -----------------------------
+@torch.no_grad()
+def evaluate(model, loader, criterion, pad_idx):
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+    total_correct = 0
 
-        for batch in dataloader:
+    for batch in loader:
+        src = batch["input_ids"].to(DEVICE)
+        trg = batch["target_ids"].to(DEVICE)
+        src_lengths = batch["input_lengths"]
+
+        # Im Eval keine Teacher-Forcing-„Schummelei“
+        logits = model(src, trg, src_lengths, teacher_forcing_ratio=0.0)
+
+        # Loss berechnen (klassisches next-token, ohne t=0)
+        logits_flat  = logits[:, 1:, :].contiguous().view(-1, logits.size(-1))
+        targets_flat = trg[:, 1:].contiguous().view(-1)
+        loss = criterion(logits_flat, targets_flat)
+        total_loss += loss.item()
+
+        # Token-Accuracy: Vorhersage vs. Gold, PAD ignorieren
+        preds = logits[:, 1:, :].argmax(dim=-1)   # [B, T-1]
+        gold  = trg[:, 1:]                        # [B, T-1]
+        mask  = (gold != pad_idx)                 # nur echte Tokens
+        correct = (preds == gold) & mask
+        total_correct += correct.sum().item()
+        total_tokens  += mask.sum().item()
+
+    avg_loss = total_loss / max(1, len(loader))
+    ppl = float(torch.exp(torch.tensor(avg_loss)))
+    acc = (total_correct / total_tokens) if total_tokens > 0 else 0.0
+    return avg_loss, ppl, acc
+
+
+# -----------------------------
+# Training (mit Val-Loop & Checkpoint)
+# -----------------------------
+def train(model, train_loader, val_loader, optimizer, criterion, dataset,
+          num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
+    best_val_ppl = float("inf")
+
+    for epoch in range(1, num_epochs + 1):
+        model.train()
+        total_loss = 0.0
+
+        for batch in train_loader:
             src = batch["input_ids"].to(DEVICE)
             trg = batch["target_ids"].to(DEVICE)
             src_lengths = batch["input_lengths"]
 
             optimizer.zero_grad()
-            logits = model(src, trg, src_lengths, teacher_forcing_ratio=0.5)
+            logits = model(src, trg, src_lengths, teacher_forcing_ratio=teacher_forcing_ratio)
 
-            logits_flat = logits[:, 1:, :].contiguous().view(-1, logits.size(-1))
+            # Loss über t>=1 (klassischer Shift)
+            logits_flat  = logits[:, 1:, :].contiguous().view(-1, logits.size(-1))
             targets_flat = trg[:, 1:].contiguous().view(-1)
 
             loss = criterion(logits_flat, targets_flat)
@@ -106,47 +164,76 @@ def train(model, dataloader, optimizer, criterion, dataset, num_epochs=10):
 
             total_loss += loss.item()
 
-        avg_loss = total_loss / len(dataloader)
-        ppl = torch.exp(torch.tensor(avg_loss))
-        print(f"Epoch {epoch+1}, avg loss {avg_loss:.4f}, perplexity {ppl:.2f}")
+        # Train-Metriken
+        train_loss = total_loss / len(train_loader)
+        train_ppl = float(torch.exp(torch.tensor(train_loss)))
 
-        # Debug prediction
+        # Validation
+        val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
+
+        print(f"Epoch {epoch:02d} | "
+              f"Train loss {train_loss:.4f} (ppl {train_ppl:.2f})  | "
+              f"Val loss {val_loss:.4f} (ppl {val_ppl:.2f})  | "
+              f"Val token-acc {val_acc*100:.1f}%")
+
+        # Bestes Modell speichern (nach Val-PPL)
+        if val_ppl < best_val_ppl:
+            best_val_ppl = val_ppl
+            ckpt_path = os.path.join(CKPT_DIR, f"best_epoch{epoch}_ppl{val_ppl:.2f}.pt")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  ✓ Saved checkpoint: {ckpt_path}")
+
+        # Kleine Debug-Prediction (ein Beispiel aus letztem Batch der Epoche)
         sample_title = batch["input_ids"][0]
-        sample_len = batch["input_lengths"][0]
+        sample_len   = batch["input_lengths"][0]
         prediction = greedy_decode_one(model, dataset, sample_title, sample_len)
-
-        ground_truth = batch["target_ids"][0].tolist()
-        ground_truth_words = [
-            dataset.target_vocab.idx2word[idx]
-            for idx in ground_truth
-            if idx not in [dataset.target_vocab.word2idx["<PAD>"]]
-        ]
-
-        print("Predicted:", prediction)
-        print("Ground truth:", ground_truth_words)
+        print("  Predicted:", prediction[:12])
 
 
-# ----------------------
-# Main entrypoint
-# ----------------------
+# -----------------------------
+# Entrypoint (lokal UND Colab)
+# -----------------------------
 if __name__ == "__main__":
+    # 1) Dataset laden
     dataset = RecipeDataset(DATA_PATH)
 
-    subset = torch.utils.data.Subset(dataset, range(2000))  # nur 2k Beispiele
-    dataloader = DataLoader(subset, batch_size=8, shuffle=True, collate_fn=collate_fn)
+    # 2) Optional: kleiner machen (schnelleres Debugging)
+    use_subset = 20000  # setze None für Vollgröße
+    if use_subset is not None:
+        dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
-    encoder = EncoderRNN(len(dataset.input_vocab), 128, 256, 1)
-    decoder = DecoderRNN(len(dataset.target_vocab), 128, 256, 1)
+    # 3) Train/Val-Split (z. B. 90/10)
+    val_ratio = 0.1
+    n_total = len(dataset)
+    n_val = int(n_total * val_ratio)
+    n_train = n_total - n_val
+    train_set, val_set = random_split(dataset, [n_train, n_val])
+
+    # 4) Dataloader
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
+    val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
+
+    # 5) Modelle (128 Embedding, 256 Hidden, 1 Layer → kannst du variieren)
+    #    Achtung: Signatur: (vocab_size, embedding_dim, hidden_dim, num_layers)
+    enc = EncoderRNN(len(train_set.dataset.input_vocab), 128, 256, 1)
+    dec = DecoderRNN(len(train_set.dataset.target_vocab), 128, 256, 1)
 
     model = Seq2Seq(
-        encoder=encoder,
-        decoder=decoder,
+        encoder=enc,
+        decoder=dec,
         device=DEVICE,
-        sos_idx=dataset.target_vocab.word2idx["<SOS>"],
-        pad_idx=dataset.target_vocab.word2idx["<PAD>"]
+        sos_idx=train_set.dataset.target_vocab.word2idx["<SOS>"],
+        pad_idx=train_set.dataset.target_vocab.word2idx["<PAD>"]
     ).to(DEVICE)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=dataset.target_vocab.word2idx["<PAD>"])
+    # 6) Optimizer & Loss
+    pad_idx = train_set.dataset.target_vocab.word2idx["<PAD>"]
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    train(model, dataloader, optimizer, criterion, dataset, num_epochs=10)
+    # 7) Trainieren (mit Validation & Checkpoint)
+    train(model, train_loader, val_loader, optimizer, criterion,
+          dataset=train_set.dataset,
+          num_epochs=10,
+          pad_idx=pad_idx,
+          teacher_forcing_ratio=0.5)
