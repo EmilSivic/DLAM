@@ -209,42 +209,37 @@ if __name__ == "__main__":
     n_train = n_total - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val])
 
-    vocab_ds = base_dataset(train_set)
-
-    # 4) Dataloader
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
-    val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
-
-
+    # ---- HIER zuerst base_dataset definieren ----
     import torch.utils.data as tud
-
-
     def base_dataset(ds):
         # ent-nestet Subsets bis zur echten RecipeDataset
         while isinstance(ds, tud.Subset):
             ds = ds.dataset
         return ds
 
+    # Dann benutzen
+    vocab_ds = base_dataset(train_set)
 
+    # 4) Dataloader
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
+    val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
 
-
-    # 5) Modelle (128 Embedding, 256 Hidden, 1 Layer → kannst du variieren)
-    #    Achtung: Signatur: (vocab_size, embedding_dim, hidden_dim, num_layers)
+    # 5) Modelle
     enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 256, 1)
     dec = DecoderRNN(len(vocab_ds.target_vocab), 128, 256, 1)
     model = Seq2Seq(enc, dec, DEVICE,
                     sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
                     pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
 
-
     # 6) Optimizer & Loss
-    pad_idx = train_set.dataset.target_vocab.word2idx["<PAD>"]
+    pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    # 7) Trainieren (mit Validation & Checkpoint)
+    # 7) Trainieren
     train(model, train_loader, val_loader, optimizer, criterion,
-          dataset=train_set.dataset,
+          dataset=vocab_ds,
           num_epochs=10,
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
+
