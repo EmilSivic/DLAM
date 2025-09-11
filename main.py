@@ -230,7 +230,7 @@ if __name__ == "__main__":
     # train
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
           num_epochs=20,
