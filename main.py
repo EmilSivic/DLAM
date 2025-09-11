@@ -196,7 +196,7 @@ if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
 
     # SUBSET of data
-    use_subset = 5000  # setze None für Vollgröße
+    use_subset = 15000  # setze None für Vollgröße
     if use_subset is not None:
         dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
@@ -222,8 +222,8 @@ if __name__ == "__main__":
     val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
 
     #models
-    enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 64, 1)
-    dec = DecoderRNN(len(vocab_ds.target_vocab), 128, 64, 1)
+    enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 128, 1)
+    dec = DecoderRNN(len(vocab_ds.target_vocab), 128, 128, 1)
     model = Seq2Seq(enc, dec, DEVICE,
                     sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
                     pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
@@ -234,7 +234,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
-          num_epochs=13,
+          num_epochs=20,
           pad_idx=pad_idx,
           teacher_forcing_ratio= 0.5)
 
