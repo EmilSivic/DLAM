@@ -159,7 +159,6 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             optimizer.step()
-            scheduler.step()
 
             total_loss += loss.item()
 
@@ -169,6 +168,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
 
         # Validation
         val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
+        scheduler.step(val_loss)
 
         print(f"Epoch {epoch:02d} | "
               f"Train loss {train_loss:.4f} (ppl {train_ppl:.2f})  | "
