@@ -209,22 +209,33 @@ if __name__ == "__main__":
     n_train = n_total - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val])
 
+    vocab_ds = base_dataset(train_set)
+
     # 4) Dataloader
     train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
     val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
 
+
+    import torch.utils.data as tud
+
+
+    def base_dataset(ds):
+        # ent-nestet Subsets bis zur echten RecipeDataset
+        while isinstance(ds, tud.Subset):
+            ds = ds.dataset
+        return ds
+
+
+
+
     # 5) Modelle (128 Embedding, 256 Hidden, 1 Layer → kannst du variieren)
     #    Achtung: Signatur: (vocab_size, embedding_dim, hidden_dim, num_layers)
-    enc = EncoderRNN(len(train_set.dataset.input_vocab), 128, 256, 1)
-    dec = DecoderRNN(len(train_set.dataset.target_vocab), 128, 256, 1)
+    enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 256, 1)
+    dec = DecoderRNN(len(vocab_ds.target_vocab), 128, 256, 1)
+    model = Seq2Seq(enc, dec, DEVICE,
+                    sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
+                    pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
 
-    model = Seq2Seq(
-        encoder=enc,
-        decoder=dec,
-        device=DEVICE,
-        sos_idx=train_set.dataset.target_vocab.word2idx["<SOS>"],
-        pad_idx=train_set.dataset.target_vocab.word2idx["<PAD>"]
-    ).to(DEVICE)
 
     # 6) Optimizer & Loss
     pad_idx = train_set.dataset.target_vocab.word2idx["<PAD>"]
