@@ -200,7 +200,7 @@ if __name__ == "__main__":
         dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
     #Train/Val-Split 90/10
-    val_ratio = 0.1
+    val_ratio = 0.2
     n_total = len(dataset)
     n_val = int(n_total * val_ratio)
     n_train = n_total - n_val
@@ -233,9 +233,9 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
-          num_epochs=20,
+          num_epochs=10,
           pad_idx=pad_idx,
-          teacher_forcing_ratio=0.5)
+          teacher_forcing_ratio=max(0.5 * (0.95 ** epoch), 0.1))
 
     import matplotlib.pyplot as plt
 
