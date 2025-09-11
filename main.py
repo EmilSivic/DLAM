@@ -139,6 +139,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
 
 
     for epoch in range(1, num_epochs + 1):
+        teacher_forcing_ratio = max(0.5 * (0.95 ** epoch), 0.1)
         model.train()
         total_loss = 0.0
 
@@ -235,7 +236,7 @@ if __name__ == "__main__":
           dataset=vocab_ds,
           num_epochs=10,
           pad_idx=pad_idx,
-          teacher_forcing_ratio=max(0.5 * (0.95 ** epoch), 0.1))
+          teacher_forcing_ratio= 0.5)
 
     import matplotlib.pyplot as plt
 
@@ -244,4 +245,6 @@ if __name__ == "__main__":
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend()
-    plt.show()
+    plt.savefig("loss_plot.png")  # save as file
+    plt.close()
+
