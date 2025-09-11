@@ -233,7 +233,9 @@ if __name__ == "__main__":
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=3, verbose=True
+    )
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
           num_epochs=30,
