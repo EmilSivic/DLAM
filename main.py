@@ -136,6 +136,9 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
           num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
     best_val_ppl = float("inf")
 
+    train_losses_all = []
+    val_losses_all = []
+
     for epoch in range(1, num_epochs + 1):
         model.train()
         total_loss = 0.0
@@ -183,6 +186,9 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
         sample_len   = batch["input_lengths"][0]
         prediction = greedy_decode_one(model, dataset, sample_title, sample_len)
         print("  Predicted:", prediction[:12])
+
+        train_losses_all.append(train_loss)
+        val_losses_all.append(val_loss)
 
 
 # entrypoint
@@ -233,7 +239,10 @@ if __name__ == "__main__":
           teacher_forcing_ratio=0.5)
 
 import matplotlib.pyplot as plt
-plt.plot(train_losses, label="train")
-plt.plot(val_losses, label="val")
+
+plt.plot(train_losses_all, label="Train Loss")
+plt.plot(val_losses_all, label="Val Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
 plt.legend()
 plt.show()
