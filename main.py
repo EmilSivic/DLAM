@@ -237,11 +237,11 @@ if __name__ == "__main__":
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
 
-import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt
 
-plt.plot(train_losses_all, label="Train Loss")
-plt.plot(val_losses_all, label="Val Loss")
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.legend()
-plt.show()
+    plt.plot(train_losses_all, label="Train Loss")
+    plt.plot(val_losses_all, label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.show()
