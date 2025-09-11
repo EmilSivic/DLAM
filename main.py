@@ -5,6 +5,42 @@ from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from model import EncoderRNN, DecoderRNN
 
+
+import csv
+import time
+
+LOGFILE = "experiment_log.csv"
+
+def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time):
+    """
+    Schreibt Ergebnisse in eine CSV-Datei.
+    """
+    file_exists = os.path.isfile(LOGFILE)
+    with open(LOGFILE, mode="a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow([
+                "model", "embedding_dim", "hidden_dim", "num_layers", "dropout",
+                "batch_size", "lr", "weight_decay",
+                "best_epoch", "best_val_loss", "best_val_ppl", "best_val_acc", "train_time"
+            ])
+        writer.writerow([
+            model_name,
+            params.get("embedding_dim"),
+            params.get("hidden_dim"),
+            params.get("num_layers"),
+            params.get("dropout"),
+            params.get("batch_size"),
+            params.get("lr"),
+            params.get("weight_decay"),
+            best_epoch,
+            round(best_val_loss, 4),
+            round(best_val_ppl, 2),
+            round(best_val_acc * 100, 2),
+            round(train_time, 2)
+        ])
+
+
 # configurations
 DEFAULT_DATA_PATH = "data/processed_recipes.csv"
 DATA_PATH = os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
@@ -135,13 +171,18 @@ val_losses_all = []
 def train(model, train_loader, val_loader, optimizer, criterion, dataset,
           num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
     best_val_ppl = float("inf")
-
+    best_val_ppl = float("inf")
+    best_val_loss = None
+    best_val_acc = None
+    best_epoch = None
+    start_time = time.time()
 
 
     for epoch in range(1, num_epochs + 1):
         teacher_forcing_ratio = max(0.5 * (0.95 ** epoch), 0.1)
         model.train()
         total_loss = 0.0
+
 
         for batch in train_loader:
             src = batch["input_ids"].to(DEVICE)
@@ -170,6 +211,15 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
         val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
         scheduler.step(val_loss)
 
+        if val_ppl < best_val_ppl:
+            best_val_ppl = val_ppl
+            best_val_loss = val_loss
+            best_val_acc = val_acc
+            best_epoch = epoch
+            ckpt_path = os.path.join(CKPT_DIR, f"best_epoch{epoch}_ppl{val_ppl:.2f}.pt")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"Saved checkpoint: {ckpt_path}")
+
         print(f"Epoch {epoch:02d} | "
               f"Train loss {train_loss:.4f} (ppl {train_ppl:.2f})  | "
               f"Val loss {val_loss:.4f} (ppl {val_ppl:.2f})  | "
@@ -191,13 +241,25 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
         train_losses_all.append(train_loss)
         val_losses_all.append(val_loss)
 
+    train_time = time.time() - start_time
+    # Logging
+    params = {
+        "embedding_dim": model.encoder.embedding.embedding_dim,
+        "hidden_dim": model.encoder.lstm.hidden_size,
+        "num_layers": model.encoder.lstm.num_layers,
+        "dropout": model.encoder.lstm.dropout,
+        "batch_size": train_loader.batch_size,
+        "lr": optimizer.param_groups[0]["lr"],
+        "weight_decay": optimizer.param_groups[0]["weight_decay"],
+    }
+    log_results(type(model).__name__, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time)
 
 # entrypoint
 if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
 
     # SUBSET of data
-    use_subset = None  # setze None für Vollgröße
+    use_subset = 50000  # setze None für Vollgröße
     if use_subset is not None:
         dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
