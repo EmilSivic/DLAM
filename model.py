@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.1):
+    def __init__(self, input_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.4):
         super().__init__()
         self.embedding = nn.Embedding(input_vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=num_layers, batch_first=True, dropout=dropout)
@@ -29,7 +29,7 @@ import torch.nn as nn
 
 
 class DecoderRNN(nn.Module):
-    def __init__(self, output_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.1):
+    def __init__(self, output_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.4):
         super().__init__()
 
         # Embedding (traininng of word representation)

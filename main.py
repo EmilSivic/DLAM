@@ -129,15 +129,14 @@ def evaluate(model, loader, criterion, pad_idx):
     acc = (total_correct / total_tokens) if total_tokens > 0 else 0.0
     return avg_loss, ppl, acc
 
-
-
+train_losses_all = []
+val_losses_all = []
 # train with validations and checkpoints
 def train(model, train_loader, val_loader, optimizer, criterion, dataset,
           num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
     best_val_ppl = float("inf")
 
-    train_losses_all = []
-    val_losses_all = []
+
 
     for epoch in range(1, num_epochs + 1):
         model.train()
