@@ -5,9 +5,7 @@ from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from model import EncoderRNN, DecoderRNN
 
-# -----------------------------
-# Config / Gerätewahl
-# -----------------------------
+# configurations
 DEFAULT_DATA_PATH = "data/processed_recipes.csv"
 DATA_PATH = os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -16,9 +14,7 @@ CKPT_DIR = os.environ.get("CKPT_DIR", "./checkpoints")
 os.makedirs(CKPT_DIR, exist_ok=True)
 
 
-# -----------------------------
-# Seq2Seq Wrapper (Encoder+Decoder)
-# -----------------------------
+# train encoder and decoder end to end
 class Seq2Seq(nn.Module):
     def __init__(self, encoder, decoder, device, sos_idx, pad_idx):
         super().__init__()
@@ -37,13 +33,13 @@ class Seq2Seq(nn.Module):
         batch_size, trg_len = trg.size(0), trg.size(1)
         vocab_size = self.decoder.fc_out.out_features
 
-        # Encoder “liest” den Titel und gibt initiale hidden/cell für Decoder
+        # Encoder reads titles
         hidden, cell = self.encoder(src, src_length)
 
-        # Platz für alle Logits über die komplette Ziel-Sequenz
+        # reserviere speicher für logits
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
 
-        # Wir starten im Decoder immer mit <SOS> (liegt als trg[:,0] vor)
+        # start decoder with <SOS> liegt als trg[:,0] vor
         input_token = trg[:, 0].to(self.device)
 
         # Schrittweise über die Ziel-Länge laufen (Auto-Regressiv)
@@ -134,9 +130,8 @@ def evaluate(model, loader, criterion, pad_idx):
     return avg_loss, ppl, acc
 
 
-# -----------------------------
-# Training (mit Val-Loop & Checkpoint)
-# -----------------------------
+
+# train with validations and checkpoints
 def train(model, train_loader, val_loader, optimizer, criterion, dataset,
           num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
     best_val_ppl = float("inf")
@@ -181,7 +176,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
             best_val_ppl = val_ppl
             ckpt_path = os.path.join(CKPT_DIR, f"best_epoch{epoch}_ppl{val_ppl:.2f}.pt")
             torch.save(model.state_dict(), ckpt_path)
-            print(f"  ✓ Saved checkpoint: {ckpt_path}")
+            print(f"Saved checkpoint: {ckpt_path}")
 
         # Kleine Debug-Prediction (ein Beispiel aus letztem Batch der Epoche)
         sample_title = batch["input_ids"][0]
@@ -190,26 +185,23 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
         print("  Predicted:", prediction[:12])
 
 
-# -----------------------------
-# Entrypoint (lokal UND Colab)
-# -----------------------------
+# entrypoint
 if __name__ == "__main__":
-    # 1) Dataset laden
     dataset = RecipeDataset(DATA_PATH)
 
-    # 2) Optional: kleiner machen (schnelleres Debugging)
+    # SUBSET of data
     use_subset = 20000  # setze None für Vollgröße
     if use_subset is not None:
         dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
-    # 3) Train/Val-Split (z. B. 90/10)
+    #Train/Val-Split 90/10
     val_ratio = 0.1
     n_total = len(dataset)
     n_val = int(n_total * val_ratio)
     n_train = n_total - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val])
 
-    # ---- HIER zuerst base_dataset definieren ----
+    # baseset
     import torch.utils.data as tud
     def base_dataset(ds):
         # ent-nestet Subsets bis zur echten RecipeDataset
@@ -217,29 +209,31 @@ if __name__ == "__main__":
             ds = ds.dataset
         return ds
 
-    # Dann benutzen
     vocab_ds = base_dataset(train_set)
 
-    # 4) Dataloader
+    #dataloader
     train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
     val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
 
-    # 5) Modelle
+    #models
     enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 256, 1)
     dec = DecoderRNN(len(vocab_ds.target_vocab), 128, 256, 1)
     model = Seq2Seq(enc, dec, DEVICE,
                     sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
                     pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
 
-    # 6) Optimizer & Loss
+    # train
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    # 7) Trainieren
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
           num_epochs=10,
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
 
+import matplotlib.pyplot as plt
+plt.plot(train_losses, label="train")
+plt.plot(val_losses, label="val")
+plt.legend()
+plt.show()
