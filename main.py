@@ -197,7 +197,7 @@ if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
 
     # SUBSET of data
-    use_subset = 15000  # setze None für Vollgröße
+    use_subset = 50000  # setze None für Vollgröße
     if use_subset is not None:
         dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
