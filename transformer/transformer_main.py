@@ -5,12 +5,15 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from transformer_model import Seq2SeqTransformer
+import matplotlib.pyplot as plt
 
 LOGFILE = "experiment_log.csv"
 DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CKPT_DIR = os.environ.get("CKPT_DIR", "./checkpoints")
 os.makedirs(CKPT_DIR, exist_ok=True)
+
+train_losses_all, val_losses_all = [], []
 
 def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss):
     file_exists = os.path.isfile(LOGFILE)
@@ -60,6 +63,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
     best_val_ppl = float("inf")
     best_val_loss=best_val_acc=best_epoch=None
     start = time.time()
+
     for epoch in range(1, num_epochs+1):
         model.train()
         total_loss=0
@@ -74,23 +78,39 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            if scheduler: scheduler.step()
+            if scheduler: scheduler.step()   # step per batch for Noam
             total_loss += loss.item()
+
         train_loss = total_loss/len(train_loader)
         train_ppl = float(torch.exp(torch.tensor(train_loss)))
 
         val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
 
+        # store for plotting
+        train_losses_all.append(train_loss)
+        val_losses_all.append(val_loss)
+
         if val_ppl < best_val_ppl:
             best_val_ppl, best_val_loss, best_val_acc, best_epoch = val_ppl, val_loss, val_acc, epoch
             torch.save(model.state_dict(), os.path.join(CKPT_DIR, f"transformer_epoch{epoch}_ppl{val_ppl:.2f}.pt"))
-        print(f"Epoch {epoch} | train {train_loss:.4f} (ppl {train_ppl:.2f}) | val {val_loss:.4f} (ppl {val_ppl:.2f}) | acc {val_acc*100:.1f}%")
+
+        print(f"Epoch {epoch} | train {train_loss:.4f} (ppl {train_ppl:.2f}) "
+              f"| val {val_loss:.4f} (ppl {val_ppl:.2f}) | acc {val_acc*100:.1f}%")
 
         sample = batch["input_ids"][0:1].to(DEVICE)
         sos = vocab_ds.target_vocab.word2idx["<SOS>"]; eos = vocab_ds.target_vocab.word2idx["<EOS>"]
         out_ids = model.greedy_or_topk(sample, 15, sos, eos)[0].tolist()
         words = [vocab_ds.target_vocab.idx2word.get(i,"<UNK>") for i in out_ids[1:]]
         print("  Pred:", words[:12])
+
+    # after training, plot losses
+    plt.plot(train_losses_all, label="Train")
+    plt.plot(val_losses_all, label="Val")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig("loss_plot.png")
+    plt.close()
 
     train_time = time.time()-start
     params = {
@@ -137,4 +157,4 @@ if __name__=="__main__":
         return (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    train(model, train_loader, val_loader, optimizer, criterion, 30, pad_idx, scheduler)
+    train(model, train_loader, val_loader, optimizer, criterion, 20, pad_idx, scheduler)
