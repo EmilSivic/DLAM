@@ -68,24 +68,27 @@ class Seq2Seq(nn.Module):
         self.pad_idx = pad_idx
 
     def forward(self, src, trg, src_length, teacher_forcing_ratio=0.5):
-        batch_size, trg_len = trg.size(0), trg.size(1)
+        batch_size, trg_len = trg.size()
         vocab_size = self.decoder.fc_out.out_features
 
-        hidden, cell = self.encoder(src, src_length)
+        # Encoder
+        encoder_outputs, hidden, cell = self.encoder(src, src_length)
+
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
 
-        input_token = trg[:, 0].to(self.device)
+        input_token = trg[:, 0]  # <SOS>
+
         for t in range(1, trg_len):
-            step_logits, hidden, cell = self.decoder(input_token, hidden, cell)
+            step_logits, hidden, cell, _ = self.decoder(
+                input_token, hidden, cell, encoder_outputs
+            )
             outputs[:, t, :] = step_logits
 
             use_tf = (torch.rand(1).item() < teacher_forcing_ratio)
-            if use_tf:
-                input_token = trg[:, t].long()
-            else:
-                input_token = step_logits.argmax(dim=1)
+            input_token = trg[:, t] if use_tf else step_logits.argmax(dim=1)
 
         return outputs
+
 
 @torch.no_grad()
 def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
