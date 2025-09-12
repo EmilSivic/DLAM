@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_vocab_size, embedding_dim, hidden_dim, num_layers=2, dropout=0.5):
+    def __init__(self, input_vocab_size, embedding_dim, hidden_dim, num_layers=2, dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(input_vocab_size, embedding_dim)
         self.emb_dropout = nn.Dropout(dropout)   #dropout on embeddings
