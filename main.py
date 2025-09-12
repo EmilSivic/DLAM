@@ -44,7 +44,7 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
             round(train_time, 2)
         ])
 
-# Hilfsfunktion für sprechende Namen
+# function to name the model
 def get_model_name(enc, dec):
     return f"LSTM_{enc.embedding_dim}emb_{enc.hidden_dim}hid_{enc.num_layers}ly_{enc.dropout:.1f}drop"
 
@@ -238,8 +238,8 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_set, batch_size=128, shuffle=True, collate_fn=collate_fn)
     val_loader   = DataLoader(val_set, batch_size=128, shuffle=False, collate_fn=collate_fn)
 
-    enc = EncoderRNN(len(vocab_ds.input_vocab), 256, 256, 2)
-    dec = DecoderRNN(len(vocab_ds.target_vocab), 256, 256, 2)
+    enc = EncoderRNN(len(vocab_ds.input_vocab), 512, 256, 1)
+    dec = DecoderRNN(len(vocab_ds.target_vocab), 512, 256, 1)
     model = Seq2Seq(enc, dec, DEVICE,
                     sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
                     pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
