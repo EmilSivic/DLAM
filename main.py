@@ -108,8 +108,13 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
         title_ids.unsqueeze(0).to(DEVICE),
         title_len.unsqueeze(0)
     )
-    # Maske aus Eingabe
-    src_mask = (title_ids.unsqueeze(0).to(DEVICE) != model.pad_idx)
+
+    # Maske aus Eingabe, gleiche Länge wie encoder_outputs
+    src_mask = (title_ids.unsqueeze(0).to(DEVICE) != model.pad_idx)  # [1, orig_len]
+    if src_mask.size(1) < encoder_outputs.size(1):
+        # rechts mit Einsen auffüllen (keine PADs, weil pad_packed_sequence auffüllt)
+        pad_len = encoder_outputs.size(1) - src_mask.size(1)
+        src_mask = torch.cat([src_mask, torch.ones(1, pad_len, device=DEVICE, dtype=src_mask.dtype)], dim=1)
 
     sos_idx = dataset.target_vocab.word2idx["<SOS>"]
     eos_idx = dataset.target_vocab.word2idx["<EOS>"]
@@ -129,6 +134,7 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
         input_token = next_id
 
     return out_tokens
+
 
 
 
