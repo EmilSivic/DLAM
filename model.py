@@ -39,11 +39,14 @@ class EncoderRNN(nn.Module):
         outputs, (hidden, cell) = self.lstm(packed)
 
         if self.bidirectional:
-            # letzte Layer der beiden Richtungen zusammenfassen
             hidden = torch.cat((hidden[-2], hidden[-1]), dim=1)
-            cell   = torch.cat((cell[-2], cell[-1]), dim=1)
+            cell = torch.cat((cell[-2], cell[-1]), dim=1)
             hidden = self.reduce_h(hidden).unsqueeze(0)
-            cell   = self.reduce_c(cell).unsqueeze(0)
+            cell = self.reduce_c(cell).unsqueeze(0)
+
+            # expand if more than one layer
+            hidden = hidden.repeat(self.num_layers, 1, 1)
+            cell = cell.repeat(self.num_layers, 1, 1)
         return hidden, cell
 
 
