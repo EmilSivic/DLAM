@@ -21,8 +21,10 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
             writer.writerow([
                 "model", "embedding_dim", "hidden_dim", "num_layers", "dropout",
                 "batch_size", "lr", "weight_decay",
-                "best_epoch", "best_val_loss", "best_val_ppl", "best_val_acc", "train_time"
+                "best_epoch", "best_val_loss", "best_val_ppl", "best_val_acc",
+                "train_loss", "gen_gap", "train_time"
             ])
+
         gen_gap = best_val_loss - train_loss
         writer.writerow([
             model_name,
@@ -250,7 +252,7 @@ if __name__ == "__main__":
 
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
-          num_epochs=20,
+          num_epochs=10,
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
 
