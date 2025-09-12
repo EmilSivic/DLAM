@@ -74,18 +74,12 @@ class Seq2Seq(nn.Module):
         # Encoder
         encoder_outputs, hidden, cell = self.encoder(src, src_length)
 
-        # Layer-Mapping (robust falls Layerzahl abweicht)
-        enc_layers = hidden.size(0)
-        dec_layers = self.decoder.num_layers
-        if enc_layers != dec_layers:
-            hidden = hidden[-dec_layers:]
-            cell = cell[-dec_layers:]
-
-        # PAD-Maske für Attention (1 = Token, 0 = PAD)
-        src_mask = (src != self.pad_idx).to(self.device)  # [B, src_len]
+        # Maske passend zu encoder_outputs
+        seq_len = encoder_outputs.size(1)
+        src_mask = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(batch_size, -1)
+        src_mask = src_mask < src_length.unsqueeze(1).to(self.device)
 
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
-
         input_token = trg[:, 0]  # <SOS>
 
         for t in range(1, trg_len):
@@ -148,7 +142,7 @@ def evaluate(model, loader, criterion, pad_idx):
     for batch in loader:
         src = batch["input_ids"].to(DEVICE)
         trg = batch["target_ids"].to(DEVICE)
-        src_lengths = batch["input_lengths"]
+        src_lengths = batch["input_lengths"].to(DEVICE)
 
         logits = model(src, trg, src_lengths, teacher_forcing_ratio=0.0)
 
@@ -168,6 +162,7 @@ def evaluate(model, loader, criterion, pad_idx):
     ppl = float(torch.exp(torch.tensor(avg_loss)))
     acc = (total_correct / total_tokens) if total_tokens > 0 else 0.0
     return avg_loss, ppl, acc
+
 
 train_losses_all = []
 val_losses_all = []
