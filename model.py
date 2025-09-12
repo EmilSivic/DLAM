@@ -15,6 +15,12 @@ class EncoderRNN(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0
         )
 
+        # --- Speichere Hyperparameter ---
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+
     def forward(self, input_ids, input_lengths):
         embedded = self.embedding(input_ids)
         embedded = self.emb_dropout(embedded)    #apply dropout
@@ -39,6 +45,13 @@ class DecoderRNN(nn.Module):
         )
         self.fc_out = nn.Linear(hidden_dim, output_vocab_size)
         self.out_dropout = nn.Dropout(dropout)   # dropout on projection
+
+
+        # --- Speichere Hyperparameter ---
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
 
     def forward(self, input_token, hidden, cell):
         embedded = self.embedding(input_token).unsqueeze(1)

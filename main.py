@@ -44,7 +44,7 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
 
 # Hilfsfunktion für sprechende Namen
 def get_model_name(enc, dec):
-    return f"LSTM_{enc.embedding.embedding_dim}emb_{enc.lstm.hidden_size}hid_{enc.lstm.num_layers}ly_{enc.lstm.dropout:.1f}drop"
+    return f"LSTM_{enc.embedding_dim}emb_{enc.hidden_dim}hid_{enc.num_layers}ly_{enc.dropout:.1f}drop"
 
 # configurations
 DEFAULT_DATA_PATH = "data/processed_recipes.csv"
@@ -201,10 +201,10 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
 
     train_time = time.time() - start_time
     params = {
-        "embedding_dim": model.encoder.embedding.embedding_dim,
-        "hidden_dim": model.encoder.lstm.hidden_size,
-        "num_layers": model.encoder.lstm.num_layers,
-        "dropout": model.encoder.lstm.dropout,
+        "embedding_dim": model.encoder.embedding_dim,
+        "hidden_dim": model.encoder.hidden_dim,
+        "num_layers": model.encoder.num_layers,
+        "dropout": model.encoder.dropout,
         "batch_size": train_loader.batch_size,
         "lr": optimizer.param_groups[0]["lr"],
         "weight_decay": optimizer.param_groups[0]["weight_decay"],
