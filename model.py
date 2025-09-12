@@ -7,7 +7,7 @@ import torch.nn.functional as F
 # Encoder
 # --------------------
 class EncoderRNN(nn.Module):
-    def __init__(self, input_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.3, bidirectional=True):
+    def __init__(self, input_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.3, bidirectional=False):
         super().__init__()
         self.embedding = nn.Embedding(input_vocab_size, embedding_dim)
         self.emb_dropout = nn.Dropout(dropout)
@@ -61,30 +61,32 @@ class EncoderRNN(nn.Module):
 # Luong Attention
 # --------------------
 class LuongAttention(nn.Module):
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, enc_dim=None):
         super().__init__()
-        self.attn = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        if enc_dim is None:
+            enc_dim = hidden_dim
+        self.attn = nn.Linear(enc_dim, hidden_dim, bias=False)
 
     def forward(self, decoder_hidden, encoder_outputs, mask=None):
         # decoder_hidden: [B, H]
-        # encoder_outputs: [B, src_len, H]
-        scores = torch.bmm(encoder_outputs, decoder_hidden.unsqueeze(2)).squeeze(2)  # [B, src_len]
+        # encoder_outputs: [B, src_len, enc_dim]
+        proj_enc = self.attn(encoder_outputs)  # [B, src_len, H]
+
+        scores = torch.bmm(proj_enc, decoder_hidden.unsqueeze(2)).squeeze(2)  # [B, src_len]
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
         attn_weights = F.softmax(scores, dim=1)  # [B, src_len]
-        context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs)  # [B, 1, H]
-        context = context.squeeze(1)  # [B, H]
+        context = torch.bmm(attn_weights.unsqueeze(1), proj_enc).squeeze(1)  # [B, H]
 
         return context, attn_weights
 
 
-# --------------------
-# Decoder mit Attention
-# --------------------
+
+# decoder with Attention
 class DecoderRNN(nn.Module):
-    def __init__(self, output_vocab_size, embedding_dim, hidden_dim, num_layers=1, dropout=0.3):
+    def __init__(self, output_vocab_size, embedding_dim, hidden_dim, enc_dim=None, num_layers=1, dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(output_vocab_size, embedding_dim)
         self.emb_dropout = nn.Dropout(dropout)
@@ -97,10 +99,11 @@ class DecoderRNN(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0
         )
 
-        self.attention = LuongAttention(hidden_dim)
+        self.attention = LuongAttention(hidden_dim, enc_dim=enc_dim or hidden_dim)
 
         self.fc_out = nn.Linear(hidden_dim * 2, output_vocab_size)
         self.out_dropout = nn.Dropout(dropout)
+
 
         # Hyperparams speichern
         self.embedding_dim = embedding_dim
