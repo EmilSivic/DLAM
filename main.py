@@ -238,8 +238,8 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_set, batch_size=128, shuffle=True, collate_fn=collate_fn)
     val_loader   = DataLoader(val_set, batch_size=128, shuffle=False, collate_fn=collate_fn)
 
-    enc = EncoderRNN(len(vocab_ds.input_vocab), 512, 256, 1)
-    dec = DecoderRNN(len(vocab_ds.target_vocab), 512, 256, 1)
+    enc = EncoderRNN(len(vocab_ds.input_vocab), 512, 256, 2)
+    dec = DecoderRNN(len(vocab_ds.target_vocab), 512, 256, 2)
     model = Seq2Seq(enc, dec, DEVICE,
                     sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
                     pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
