@@ -6,8 +6,6 @@ from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from transformer_model import Seq2SeqTransformer
 
-
-
 LOGFILE = "experiment_log.csv"
 DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -76,12 +74,12 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            if scheduler: scheduler.step()
             total_loss += loss.item()
         train_loss = total_loss/len(train_loader)
         train_ppl = float(torch.exp(torch.tensor(train_loss)))
 
         val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
-        if scheduler: scheduler.step(val_loss)
 
         if val_ppl < best_val_ppl:
             best_val_ppl, best_val_loss, best_val_acc, best_epoch = val_ppl, val_loss, val_acc, epoch
@@ -124,11 +122,19 @@ if __name__=="__main__":
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
 
     model = Seq2SeqTransformer(len(vocab_ds.input_vocab), len(vocab_ds.target_vocab),
-                               d_model=512, nhead=8,
-                               num_encoder_layers=4, num_decoder_layers=4,
-                               dim_ff=2048, dropout=0.1, pad_idx=pad_idx).to(DEVICE)
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.05)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
+                               d_model=256, nhead=4,
+                               num_encoder_layers=3, num_decoder_layers=3,
+                               dim_ff=1024, dropout=0.2, pad_idx=pad_idx).to(DEVICE)
 
-    train(model, train_loader, val_loader, optimizer, criterion, 20, pad_idx, scheduler)
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0, betas=(0.9,0.98), eps=1e-9, weight_decay=1e-5)
+
+    d_model = model.embedding_dim
+    warmup_steps = 4000
+    def lr_lambda(step):
+        step = max(1, step)
+        return (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    train(model, train_loader, val_loader, optimizer, criterion, 30, pad_idx, scheduler)
