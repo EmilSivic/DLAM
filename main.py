@@ -95,7 +95,7 @@ class Seq2Seq(nn.Module):
 
 
 @torch.no_grad()
-def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
+def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15, k=5, temperature=1.0):
     model.eval()
 
     encoder_outputs, hidden, cell = model.encoder(
@@ -103,10 +103,9 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
         title_len.unsqueeze(0).to(DEVICE)
     )
 
-    # Maske passend zur Länge von encoder_outputs
+    # Maske für Attention
     seq_len = encoder_outputs.size(1)
-    title_len = title_len.to(DEVICE)
-    src_mask = torch.arange(seq_len, device=DEVICE).unsqueeze(0) < title_len.unsqueeze(0)
+    src_mask = torch.arange(seq_len, device=DEVICE).unsqueeze(0) < title_len.unsqueeze(0).to(DEVICE)
 
     sos_idx = dataset.target_vocab.word2idx["<SOS>"]
     eos_idx = dataset.target_vocab.word2idx["<EOS>"]
@@ -117,15 +116,25 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
         logits, hidden, cell, _ = model.decoder(
             input_token, hidden, cell, encoder_outputs, mask=src_mask
         )
-        next_id = logits.argmax(dim=1)
+
+        # Temperatur-Scaling
+        logits = logits / temperature
+        probs = torch.softmax(logits, dim=-1)
+
+        # Top-k Sampling
+        topk_probs, topk_idx = torch.topk(probs, k)
+        next_id = topk_idx[0, torch.multinomial(topk_probs, 1)]
+
         tok = int(next_id.item())
         if tok == eos_idx:
             break
+
         word = dataset.target_vocab.idx2word.get(tok, "<UNK>")
         out_tokens.append(word)
-        input_token = next_id
+        input_token = next_id.unsqueeze(0)
 
     return out_tokens
+
 
 
 
