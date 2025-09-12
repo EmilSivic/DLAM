@@ -93,15 +93,23 @@ class Seq2Seq(nn.Module):
 @torch.no_grad()
 def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
     model.eval()
-    hidden, cell = model.encoder(title_ids.unsqueeze(0).to(DEVICE),
-                                 title_len.unsqueeze(0))
+
+    # Encoder liefert outputs, hidden, cell
+    encoder_outputs, hidden, cell = model.encoder(
+        title_ids.unsqueeze(0).to(DEVICE),
+        title_len.unsqueeze(0)
+    )
+
     sos_idx = dataset.target_vocab.word2idx["<SOS>"]
     eos_idx = dataset.target_vocab.word2idx["<EOS>"]
     input_token = torch.tensor([sos_idx], device=DEVICE)
 
     out_tokens = []
     for _ in range(max_len):
-        logits, hidden, cell = model.decoder(input_token, hidden, cell)
+        # Decoder erwartet auch encoder_outputs
+        logits, hidden, cell, _ = model.decoder(
+            input_token, hidden, cell, encoder_outputs
+        )
         next_id = logits.argmax(dim=1)
         tok = int(next_id.item())
         if tok == eos_idx:
@@ -109,7 +117,9 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
         word = dataset.target_vocab.idx2word.get(tok, "<UNK>")
         out_tokens.append(word)
         input_token = next_id
+
     return out_tokens
+
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, pad_idx):
