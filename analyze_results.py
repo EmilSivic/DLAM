@@ -23,3 +23,18 @@ plt.title("Vergleich der Modelle")
 plt.legend()
 plt.savefig("model_comparison.png")
 plt.close()
+
+# Plot Generalization Gap
+    plt.figure(figsize=(8,5))
+    for model in df["model"].unique():
+        subset = df[df["model"] == model]
+        plt.scatter(subset["hidden_dim"], subset["gen_gap"], label=model)
+
+    plt.xlabel("Hidden Dim")
+    plt.ylabel("Generalization Gap (Val - Train Loss)")
+    plt.title("Overfitting-Vergleich")
+    plt.legend()
+    plt.savefig("generalization_gap.png")
+    plt.close()
+
+    print("Analyse abgeschlossen -> Ergebnisse in 'model_comparison.png' und 'generalization_gap.png'")

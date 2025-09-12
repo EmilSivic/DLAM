@@ -10,7 +10,7 @@ import time
 
 LOGFILE = "experiment_log.csv"
 
-def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time):
+def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss):
     """
     Schreibt Ergebnisse in eine CSV-Datei.
     """
@@ -23,6 +23,7 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
                 "batch_size", "lr", "weight_decay",
                 "best_epoch", "best_val_loss", "best_val_ppl", "best_val_acc", "train_time"
             ])
+        gen_gap = best_val_loss - train_loss
         writer.writerow([
             model_name,
             params.get("embedding_dim"),
@@ -36,6 +37,8 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
             round(best_val_loss, 4),
             round(best_val_ppl, 2),
             round(best_val_acc * 100, 2),
+            round(train_loss, 4),
+            round(gen_gap, 4),
             round(train_time, 2)
         ])
 
@@ -207,7 +210,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
         "weight_decay": optimizer.param_groups[0]["weight_decay"],
     }
     model_name = get_model_name(model.encoder, model.decoder)
-    log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time)
+    log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss)
 
 if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
@@ -230,11 +233,11 @@ if __name__ == "__main__":
 
     vocab_ds = base_dataset(train_set)
 
-    train_loader = DataLoader(train_set, batch_size=128, shuffle=True, collate_fn=collate_fn)
-    val_loader   = DataLoader(val_set, batch_size=128, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(train_set, batch_size=64, shuffle=True, collate_fn=collate_fn)
+    val_loader   = DataLoader(val_set, batch_size=64, shuffle=False, collate_fn=collate_fn)
 
-    enc = EncoderRNN(len(vocab_ds.input_vocab), 256, 256, 1)
-    dec = DecoderRNN(len(vocab_ds.target_vocab), 256, 256, 1)
+    enc = EncoderRNN(len(vocab_ds.input_vocab), 128, 128, 1)
+    dec = DecoderRNN(len(vocab_ds.target_vocab), 128, 128, 1)
     model = Seq2Seq(enc, dec, DEVICE,
                     sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
                     pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
