@@ -103,7 +103,6 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15, k=5, tem
         title_len.unsqueeze(0).to(DEVICE)
     )
 
-    # Maske für Attention
     seq_len = encoder_outputs.size(1)
     src_mask = torch.arange(seq_len, device=DEVICE).unsqueeze(0) < title_len.unsqueeze(0).to(DEVICE)
 
@@ -117,11 +116,9 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15, k=5, tem
             input_token, hidden, cell, encoder_outputs, mask=src_mask
         )
 
-        # Temperatur-Scaling
         logits = logits / temperature
         probs = torch.softmax(logits, dim=-1)
 
-        # Top-k Sampling
         topk_probs, topk_idx = torch.topk(probs, k)
         next_id = topk_idx[0, torch.multinomial(topk_probs, 1)]
 
@@ -131,9 +128,12 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15, k=5, tem
 
         word = dataset.target_vocab.idx2word.get(tok, "<UNK>")
         out_tokens.append(word)
-        input_token = next_id.unsqueeze(0)
+
+        # <<< hier war der Bug: next_id.unsqueeze(0) macht 2D >>>
+        input_token = next_id.view(1)   # sicherstellen: shape [1]
 
     return out_tokens
+
 
 
 
