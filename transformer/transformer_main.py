@@ -3,6 +3,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from transformer_model import Seq2SeqTransformer
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 LOGFILE = "experiment_log.csv"
 DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
