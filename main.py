@@ -281,7 +281,7 @@ if __name__ == "__main__":
     # Decoder mit enc_dim = 2 * hidden_dim (weil bidirectional)
     dec = DecoderRNN(
         len(vocab_ds.target_vocab), 512, 256,
-        enc_dim=512,  # wichtig!
+        enc_dim=1024,  # wichtig!
         num_layers=2, dropout=0.3
     )
 
