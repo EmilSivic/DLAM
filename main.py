@@ -73,6 +73,13 @@ class Seq2Seq(nn.Module):
 
         # Encoder
         encoder_outputs, hidden, cell = self.encoder(src, src_length)
+        # fixed bug with calling
+        enc_layers = hidden.size(0)
+        dec_layers = self.decoder.num_layers
+        if enc_layers != dec_layers:
+            # nur die letzten Schichten des Encoders verwenden
+            hidden = hidden[-dec_layers:]
+            cell = cell[-dec_layers:]
 
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
 
