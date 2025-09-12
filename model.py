@@ -60,26 +60,33 @@ class EncoderRNN(nn.Module):
 # --------------------
 # Luong Attention
 # --------------------
+# --------------------
+# Luong Attention (GENERAL + Mask)
+# --------------------
 class LuongAttention(nn.Module):
     def __init__(self, hidden_dim, enc_dim=None):
         super().__init__()
         if enc_dim is None:
             enc_dim = hidden_dim
-        self.attn = nn.Linear(enc_dim, hidden_dim, bias=False)
+        # projiziere Encoder-Outputs und Decoder-Hidden separat (GENERAL)
+        self.enc_proj = nn.Linear(enc_dim, hidden_dim, bias=False)
+        self.dec_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
 
     def forward(self, decoder_hidden, encoder_outputs, mask=None):
         # decoder_hidden: [B, H]
         # encoder_outputs: [B, src_len, enc_dim]
-        proj_enc = self.attn(encoder_outputs)  # [B, src_len, H]
+        # -> projiziere
+        proj_enc = self.enc_proj(encoder_outputs)                # [B, src_len, H]
+        proj_dec = self.dec_proj(decoder_hidden).unsqueeze(2)    # [B, H, 1]
 
-        scores = torch.bmm(proj_enc, decoder_hidden.unsqueeze(2)).squeeze(2)  # [B, src_len]
+        # scores: bmm([B, src_len, H], [B, H, 1]) -> [B, src_len, 1] -> squeeze
+        scores = torch.bmm(proj_enc, proj_dec).squeeze(2)        # [B, src_len]
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
-        attn_weights = F.softmax(scores, dim=1)  # [B, src_len]
+        attn_weights = F.softmax(scores, dim=1)                  # [B, src_len]
         context = torch.bmm(attn_weights.unsqueeze(1), proj_enc).squeeze(1)  # [B, H]
-
         return context, attn_weights
 
 

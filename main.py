@@ -73,13 +73,16 @@ class Seq2Seq(nn.Module):
 
         # Encoder
         encoder_outputs, hidden, cell = self.encoder(src, src_length)
-        # fixed bug with calling
+
+        # Layer-Mapping (robust falls Layerzahl abweicht)
         enc_layers = hidden.size(0)
         dec_layers = self.decoder.num_layers
         if enc_layers != dec_layers:
-            # nur die letzten Schichten des Encoders verwenden
             hidden = hidden[-dec_layers:]
             cell = cell[-dec_layers:]
+
+        # PAD-Maske für Attention (1 = Token, 0 = PAD)
+        src_mask = (src != self.pad_idx).to(self.device)  # [B, src_len]
 
         outputs = torch.zeros(batch_size, trg_len, vocab_size, device=self.device)
 
@@ -87,7 +90,7 @@ class Seq2Seq(nn.Module):
 
         for t in range(1, trg_len):
             step_logits, hidden, cell, _ = self.decoder(
-                input_token, hidden, cell, encoder_outputs
+                input_token, hidden, cell, encoder_outputs, mask=src_mask
             )
             outputs[:, t, :] = step_logits
 
@@ -101,11 +104,12 @@ class Seq2Seq(nn.Module):
 def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
     model.eval()
 
-    # Encoder liefert outputs, hidden, cell
     encoder_outputs, hidden, cell = model.encoder(
         title_ids.unsqueeze(0).to(DEVICE),
         title_len.unsqueeze(0)
     )
+    # Maske aus Eingabe
+    src_mask = (title_ids.unsqueeze(0).to(DEVICE) != model.pad_idx)
 
     sos_idx = dataset.target_vocab.word2idx["<SOS>"]
     eos_idx = dataset.target_vocab.word2idx["<EOS>"]
@@ -113,9 +117,8 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
 
     out_tokens = []
     for _ in range(max_len):
-        # Decoder erwartet auch encoder_outputs
         logits, hidden, cell, _ = model.decoder(
-            input_token, hidden, cell, encoder_outputs
+            input_token, hidden, cell, encoder_outputs, mask=src_mask
         )
         next_id = logits.argmax(dim=1)
         tok = int(next_id.item())
@@ -126,6 +129,7 @@ def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15):
         input_token = next_id
 
     return out_tokens
+
 
 
 @torch.no_grad()
@@ -258,16 +262,24 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_set, batch_size=256, shuffle=True, collate_fn=collate_fn)
     val_loader   = DataLoader(val_set, batch_size=256, shuffle=False, collate_fn=collate_fn)
 
-    enc = EncoderRNN(len(vocab_ds.input_vocab), 512, 256, 2, bidirectional=False)
-    dec = DecoderRNN(
-        len(vocab_ds.target_vocab),
-        512,
-        256,
-        num_layers=2)
+    # Encoder BIDIREKTIONAL
+    enc = EncoderRNN(
+        len(vocab_ds.input_vocab), 512, 256,
+        num_layers=2, dropout=0.3, bidirectional=True
+    )
 
-    model = Seq2Seq(enc, dec, DEVICE,
-                    sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
-                    pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]).to(DEVICE)
+    # Decoder mit enc_dim = 2 * hidden_dim (weil bidirectional)
+    dec = DecoderRNN(
+        len(vocab_ds.target_vocab), 512, 256,
+        enc_dim=512,  # wichtig!
+        num_layers=2, dropout=0.3
+    )
+
+    model = Seq2Seq(
+        enc, dec, DEVICE,
+        sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
+        pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]
+    ).to(DEVICE)
 
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
