@@ -15,7 +15,9 @@ os.makedirs(CKPT_DIR, exist_ok=True)
 
 train_losses_all, val_losses_all = [], []
 
-def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss):
+def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl,
+                best_val_acc, best_val_bleu, best_val_em,
+                train_time, train_loss):
     file_exists = os.path.isfile(LOGFILE)
     with open(LOGFILE, "a", newline="") as f:
         w = csv.writer(f)
@@ -23,16 +25,21 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
             w.writerow([
                 "model","embedding_dim","hidden_dim","num_layers","dropout",
                 "batch_size","lr","weight_decay",
-                "best_epoch","best_val_loss","best_val_ppl","best_val_acc",
+                "best_epoch","best_val_loss","best_val_ppl",
+                "best_val_acc","best_val_bleu","best_val_em",
                 "train_loss","gen_gap","train_time"
             ])
         w.writerow([
             model_name, params["embedding_dim"], params["hidden_dim"],
             params["num_layers"], params["dropout"], params["batch_size"],
             params["lr"], params["weight_decay"], best_epoch,
-            round(best_val_loss,4), round(best_val_ppl,2), round(best_val_acc*100,2),
-            round(train_loss,4), round(best_val_loss-train_loss,4), round(train_time,2)
+            round(best_val_loss,4), round(best_val_ppl,2),
+            round(best_val_acc*100,2), round(best_val_bleu,3),
+            round(best_val_em*100,2),
+            round(train_loss,4), round(best_val_loss-train_loss,4),
+            round(train_time,2)
         ])
+
 
 def get_model_name_t(m):
     return f"TRANS_d{m.embedding_dim}_layers{m.num_layers}_drop{m.dropout:.1f}"
@@ -105,7 +112,7 @@ def evaluate(model, loader, criterion, pad_idx, max_len=20):
 
 def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad_idx, scheduler=None):
     best_val_ppl = float("inf")
-    best_val_loss=best_val_acc=best_epoch=None
+    best_val_loss = best_val_acc = best_val_bleu = best_val_em = best_epoch = None
     start = time.time()
 
     for epoch in range(1, num_epochs+1):
@@ -128,18 +135,20 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
         train_loss = total_loss/len(train_loader)
         train_ppl = float(torch.exp(torch.tensor(train_loss)))
 
-        val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
+        val_loss, val_ppl, val_acc, val_bleu, val_em = evaluate(model, val_loader, criterion, pad_idx)
 
         # store for plotting
         train_losses_all.append(train_loss)
         val_losses_all.append(val_loss)
 
         if val_ppl < best_val_ppl:
-            best_val_ppl, best_val_loss, best_val_acc, best_epoch = val_ppl, val_loss, val_acc, epoch
+            best_val_ppl, best_val_loss = val_ppl, val_loss
+            best_val_acc, best_val_bleu, best_val_em, best_epoch = val_acc, val_bleu, val_em, epoch
             torch.save(model.state_dict(), os.path.join(CKPT_DIR, f"transformer_epoch{epoch}_ppl{val_ppl:.2f}.pt"))
 
-        print(f"Epoch {epoch} | train {train_loss:.4f} (ppl {train_ppl:.2f}) "
-              f"| val {val_loss:.4f} (ppl {val_ppl:.2f}) | acc {val_acc*100:.1f}%")
+        print(f"Epoch {epoch} | train {train_loss:.4f} | val {val_loss:.4f} "
+              f"(ppl {val_ppl:.2f}) | acc {val_acc * 100:.1f}% | "
+              f"BLEU {val_bleu:.3f} | EM {val_em * 100:.1f}%")
 
         sample = batch["input_ids"][0:1].to(DEVICE)
         sos = vocab_ds.target_vocab.word2idx["<SOS>"]; eos = vocab_ds.target_vocab.word2idx["<EOS>"]
@@ -166,7 +175,11 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
         "lr": optimizer.param_groups[0]["lr"],
         "weight_decay": optimizer.param_groups[0].get("weight_decay",0.0)
     }
-    log_results(get_model_name_t(model), params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss)
+    log_results(get_model_name_t(model), params,
+                best_epoch, best_val_loss, best_val_ppl,
+                best_val_acc, best_val_bleu, best_val_em,
+                train_time, train_loss)
+
 
 if __name__=="__main__":
     dataset = RecipeDataset(DATA_PATH)
