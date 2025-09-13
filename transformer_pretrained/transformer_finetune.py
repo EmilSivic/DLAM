@@ -223,7 +223,7 @@ def train_model(dataset, batch_size=16, num_epochs=5):
                 train_loss=train_losses[-1])
 
 if __name__ == "__main__":
-    dataset = RecipeDataset("data/processed_recipes.csv", tokenizer)
+    dataset = RecipeDataset("/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv", tokenizer)
     train_model(dataset, batch_size=16, num_epochs=5)
     # optional
     if os.path.exists("results_compact.csv"):
