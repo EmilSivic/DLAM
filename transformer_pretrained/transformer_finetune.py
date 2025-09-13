@@ -33,18 +33,33 @@ class RecipeDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         src = self.titles[idx]
-        tgt = self.ingredients[idx]
+
+        try:
+            tgt_list = eval(self.ingredients[idx])
+            tgt = " ".join(tgt_list)
+        except:
+            tgt = self.ingredients[idx]
 
         enc = self.tokenizer(
             src, max_length=self.max_len_src,
             padding="max_length", truncation=True,
             return_tensors="pt"
         )
+
         dec = self.tokenizer(
             tgt, max_length=self.max_len_tgt,
             padding="max_length", truncation=True,
             return_tensors="pt"
         )
+
+        labels = dec["input_ids"].squeeze(0)
+        labels[labels == tokenizer.pad_token_id] = -100
+
+        return {
+            "input_ids": enc["input_ids"].squeeze(0),
+            "attention_mask": enc["attention_mask"].squeeze(0),
+            "labels": labels
+        }
 
         labels = dec["input_ids"].squeeze(0)
         labels[labels == tokenizer.pad_token_id] = -100  # ignore pad in loss
