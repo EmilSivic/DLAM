@@ -7,6 +7,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from torch.optim import AdamW
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import matplotlib.pyplot as plt
+import ast
 
 # cfg
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,9 +36,9 @@ class RecipeDataset(torch.utils.data.Dataset):
         src = self.titles[idx]
 
         try:
-            tgt_list = eval(self.ingredients[idx])
-            tgt = " ".join(tgt_list)
-        except:
+            tgt_list = ast.literal_eval(self.ingredients[idx])
+            tgt = ", ".join(tgt_list)  # clearer formatting
+        except Exception:
             tgt = self.ingredients[idx]
 
         enc = self.tokenizer(
@@ -53,7 +54,7 @@ class RecipeDataset(torch.utils.data.Dataset):
         )
 
         labels = dec["input_ids"].squeeze(0)
-        labels[labels == tokenizer.pad_token_id] = -100
+        labels[labels == tokenizer.pad_token_id] = -100  # ignore pad
 
         return {
             "input_ids": enc["input_ids"].squeeze(0),
@@ -61,14 +62,6 @@ class RecipeDataset(torch.utils.data.Dataset):
             "labels": labels
         }
 
-        labels = dec["input_ids"].squeeze(0)
-        labels[labels == tokenizer.pad_token_id] = -100  # ignore pad in loss
-
-        return {
-            "input_ids": enc["input_ids"].squeeze(0),
-            "attention_mask": enc["attention_mask"].squeeze(0),
-            "labels": labels
-        }
 
 # log
 def log_results(model_name, params,
@@ -106,14 +99,15 @@ def log_results(model_name, params,
         if not file_exists:
             w.writerow([
                 "model","best_epoch","best_val_loss","best_val_ppl",
-                "best_val_acc","best_val_bleu","best_val_em"
+                "best_val_acc","best_val_bleu","best_val_em","train_time"
             ])
         w.writerow([
             model_name, best_epoch,
             round(best_val_loss,4), round(best_val_ppl,2),
             round(best_val_acc*100,2), round(best_val_bleu,3),
-            round(best_val_em*100,1)
+            round(best_val_em*100,1), round(train_time,2)
         ])
+
 
 # eval
 @torch.no_grad()
@@ -160,6 +154,7 @@ def evaluate(model, loader, max_len=20):
     em_score = total_em/n_samples if n_samples>0 else 0.0
     return avg_loss, ppl, acc, bleu_score, em_score
 
+
 # train
 def train_model(dataset, batch_size=16, num_epochs=5):
     n_total = len(dataset)
@@ -169,6 +164,19 @@ def train_model(dataset, batch_size=16, num_epochs=5):
                                       generator=torch.Generator().manual_seed(seed))
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+
+    # --- print model info once ---
+    cfg = model.config
+    print("=== Model configuration ===")
+    print("Model:", model.name_or_path)
+    print("Embedding dim:", getattr(cfg, "d_model", None))
+    print("Hidden dim:", getattr(cfg, "d_ff", None))
+    print("Num layers:", getattr(cfg, "num_layers", None))
+    print("Dropout:", getattr(cfg, "dropout_rate", getattr(cfg, "dropout", None)))
+    print("Batch size:", batch_size)
+    print("Learning rate:", optimizer.param_groups[0]["lr"])
+    print("Weight decay:", optimizer.param_groups[0].get("weight_decay", 0.0))
+    print("===========================")
 
     train_losses, val_losses = [], []
     best_val_loss, best_epoch = float("inf"), None
@@ -215,17 +223,15 @@ def train_model(dataset, batch_size=16, num_epochs=5):
 
     train_time = time.time()-start
     # log real model cfg for T5
-    cfg = model.config
     params = {
         "embedding_dim": getattr(cfg, "d_model", None),
         "hidden_dim": getattr(cfg, "d_ff", None),
-        "num_layers": getattr(cfg, "num_layers", None),  # T5 has num_layers encoder/decoder each; this is fine for log
+        "num_layers": getattr(cfg, "num_layers", None),
         "dropout": getattr(cfg, "dropout_rate", getattr(cfg, "dropout", None)),
         "batch_size": batch_size,
         "lr": optimizer.param_groups[0]["lr"],
         "weight_decay": optimizer.param_groups[0].get("weight_decay", 0.0)
     }
-    # note: val_ppl from last eval
     log_results(model_name=model.name_or_path,
                 params=params,
                 best_epoch=best_epoch,
@@ -237,9 +243,9 @@ def train_model(dataset, batch_size=16, num_epochs=5):
                 train_time=train_time,
                 train_loss=train_losses[-1])
 
+
 if __name__ == "__main__":
     dataset = RecipeDataset("/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv", tokenizer)
     train_model(dataset, batch_size=16, num_epochs=5)
-    # optional
     if os.path.exists("results_compact.csv"):
         print(pd.read_csv("results_compact.csv").tail())
