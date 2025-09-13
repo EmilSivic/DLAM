@@ -22,8 +22,8 @@ optimizer = AdamW(model.parameters(), lr=5e-5)
 class RecipeDataset(torch.utils.data.Dataset):
     def __init__(self, csv_file, tokenizer, max_len_src=32, max_len_tgt=64):
         df = pd.read_csv(csv_file)
-        self.titles = df["title"].tolist()
-        self.ingredients = df["ingredients"].tolist()
+        self.titles = df["input"].tolist()
+        self.ingredients = df["target"].tolist()
         self.tokenizer = tokenizer
         self.max_len_src = max_len_src
         self.max_len_tgt = max_len_tgt
