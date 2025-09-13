@@ -37,27 +37,71 @@ def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, bes
 def get_model_name_t(m):
     return f"TRANS_d{m.embedding_dim}_layers{m.num_layers}_drop{m.dropout:.1f}"
 
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+
 @torch.no_grad()
-def evaluate(model, loader, criterion, pad_idx):
+def evaluate(model, loader, criterion, pad_idx, max_len=20):
     model.eval()
     total_loss, total_tokens, total_correct = 0,0,0
+    total_bleu, total_em, n_samples = 0,0,0
+
+    smoothie = SmoothingFunction().method4
+
     for batch in loader:
         src = batch["input_ids"].to(DEVICE)
         trg = batch["target_ids"].to(DEVICE)
+
+        # teacher forcing loss
         logits = model(src, trg)
         logits_flat = logits[:,1:,:].reshape(-1, logits.size(-1))
         targets_flat = trg[:,1:].reshape(-1)
         loss = criterion(logits_flat, targets_flat)
         total_loss += loss.item()
+
+        # accuracy
         preds = logits[:,1:,:].argmax(-1)
         gold = trg[:,1:]
         mask = (gold != pad_idx)
         total_correct += ((preds==gold)&mask).sum().item()
         total_tokens += mask.sum().item()
+
+        # generation for BLEU / EM
+        sos = vocab_ds.target_vocab.word2idx["<SOS>"]
+        eos = vocab_ds.target_vocab.word2idx["<EOS>"]
+        outputs = model.greedy_or_topk(src, max_len, sos, eos)
+
+        for i in range(src.size(0)):
+            pred_ids = outputs[i].tolist()
+            gold_ids = trg[i].tolist()
+
+            # cut at EOS
+            if eos in pred_ids:
+                pred_ids = pred_ids[1:pred_ids.index(eos)]
+            else:
+                pred_ids = pred_ids[1:]
+            if eos in gold_ids:
+                gold_ids = gold_ids[1:gold_ids.index(eos)]
+            else:
+                gold_ids = gold_ids[1:]
+
+            pred_tokens = [vocab_ds.target_vocab.idx2word[x] for x in pred_ids]
+            gold_tokens = [vocab_ds.target_vocab.idx2word[x] for x in gold_ids]
+
+            # BLEU
+            bleu = sentence_bleu([gold_tokens], pred_tokens, smoothing_function=smoothie)
+            total_bleu += bleu
+
+            # Exact Match
+            total_em += int(pred_tokens == gold_tokens)
+            n_samples += 1
+
     avg_loss = total_loss/len(loader)
     ppl = float(torch.exp(torch.tensor(avg_loss)))
     acc = total_correct/total_tokens if total_tokens>0 else 0
-    return avg_loss, ppl, acc
+    bleu_score = total_bleu/n_samples if n_samples>0 else 0
+    em_score = total_em/n_samples if n_samples>0 else 0
+    return avg_loss, ppl, acc, bleu_score, em_score
+
 
 def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad_idx, scheduler=None):
     best_val_ppl = float("inf")
