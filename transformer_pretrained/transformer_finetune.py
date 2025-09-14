@@ -246,6 +246,6 @@ def train_model(dataset, batch_size=16, num_epochs=5):
 
 if __name__ == "__main__":
     dataset = RecipeDataset("/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv", tokenizer)
-    train_model(dataset, batch_size=16, num_epochs=5)
+    train_model(dataset, batch_size=16, num_epochs=10)
     if os.path.exists("results_compact.csv"):
         print(pd.read_csv("results_compact.csv").tail())
