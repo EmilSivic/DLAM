@@ -187,7 +187,7 @@ if __name__ == "__main__":
 
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
-          num_epochs=20,
+          num_epochs=2,
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
 
