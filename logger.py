@@ -77,16 +77,18 @@ def log_results(base_dir, model_name, params,
 @torch.no_grad()
 def evaluate(model, loader, tokenizer, device, max_len=20, pad_idx=None):
     """
-    Evaluate works with:
-      Hugging face and custom
+    Einheitliches Evaluate:
+      - HuggingFace Modelle: input_ids, attention_mask, labels
+      - Eigene Transformer: input_ids, target_ids
+      - Eigene LSTM (Seq2Seq): input_ids, target_ids, input_lengths
     """
     model.eval()
-    total_loss, total_correct, total_tokens = 0,0,0
-    total_bleu, total_em, total_jacc, n_samples = 0,0,0,0
+    total_loss, total_correct, total_tokens = 0, 0, 0
+    total_bleu, total_em, total_jacc, n_samples = 0, 0, 0, 0
     smoothie = SmoothingFunction().method4
 
     for batch in loader:
-        # Hugging Face
+        # HuggingFace
         if "attention_mask" in batch and "labels" in batch:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
@@ -101,13 +103,12 @@ def evaluate(model, loader, tokenizer, device, max_len=20, pad_idx=None):
             total_correct += ((preds == labels) & mask).sum().item()
             total_tokens += mask.sum().item()
 
-            # Generation
             gen_ids = model.generate(input_ids, attention_mask=attention_mask,
                                      max_length=max_len, num_beams=4)
             for i in range(input_ids.size(0)):
                 pred_tokens = tokenizer.decode(gen_ids[i], skip_special_tokens=True).split()
                 gold_tokens = tokenizer.decode(
-                    labels[i].masked_fill(labels[i]==-100, tokenizer.pad_token_id),
+                    labels[i].masked_fill(labels[i] == -100, tokenizer.pad_token_id),
                     skip_special_tokens=True
                 ).split()
 
@@ -121,34 +122,43 @@ def evaluate(model, loader, tokenizer, device, max_len=20, pad_idx=None):
                     total_jacc += jacc
                 n_samples += 1
 
-        # custom eval
+        # Custom Transformer / LSTM
         elif "target_ids" in batch:
             src = batch["input_ids"].to(device)
             trg = batch["target_ids"].to(device)
+            src_lengths = batch.get("input_lengths", None)
+            if src_lengths is not None:
+                src_lengths = src_lengths.to(device)
 
-            out = model(src, trg)
-            logits = out[:,1:,:]
+            # Unterschied: LSTM braucht src_lengths
+            if src_lengths is not None:
+                out = model(src, trg, src_lengths, teacher_forcing_ratio=0.0)
+            else:
+                out = model(src, trg)
+
+            logits = out[:, 1:, :]
             loss = torch.nn.functional.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
-                trg[:,1:].reshape(-1),
+                trg[:, 1:].reshape(-1),
                 ignore_index=pad_idx if pad_idx is not None else -100
             )
             total_loss += loss.item()
 
             preds = logits.argmax(-1)
-            mask = (trg[:,1:] != (pad_idx if pad_idx is not None else -100))
-            total_correct += ((preds == trg[:,1:]) & mask).sum().item()
+            mask = (trg[:, 1:] != (pad_idx if pad_idx is not None else -100))
+            total_correct += ((preds == trg[:, 1:]) & mask).sum().item()
             total_tokens += mask.sum().item()
             n_samples += src.size(0)
 
         else:
             raise ValueError(f"Unknown batch format: keys={batch.keys()}")
 
-    avg_loss = total_loss/len(loader)
+    avg_loss = total_loss / len(loader)
     ppl = math.exp(avg_loss)
-    acc = total_correct/total_tokens if total_tokens>0 else 0.0
-    bleu_score = total_bleu/n_samples if n_samples>0 else 0.0
-    em_score = total_em/n_samples if n_samples>0 else 0.0
-    jacc_score = total_jacc/n_samples if n_samples>0 else 0.0
+    acc = total_correct / total_tokens if total_tokens > 0 else 0.0
+    bleu_score = total_bleu / n_samples if n_samples > 0 else 0.0
+    em_score = total_em / n_samples if n_samples > 0 else 0.0
+    jacc_score = total_jacc / n_samples if n_samples > 0 else 0.0
     return avg_loss, ppl, acc, bleu_score, em_score, jacc_score
+
 
