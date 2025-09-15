@@ -3,7 +3,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.data import DataLoader, random_split
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AdamW
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from torch.optim import AdamW
+
 
 from logger import log_results, evaluate, print_model_info
 
