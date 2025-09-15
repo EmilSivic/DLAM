@@ -83,22 +83,39 @@ class Seq2SeqTransformer(nn.Module):
         return out
 
     @torch.no_grad()
-    def greedy_or_topk(self, src, max_len, sos_idx, eos_idx, k=1):
-        memory, src_key_mask = self._encode(src)
-        B = src.size(0)
-        ys = torch.full((B, 1), sos_idx, dtype=torch.long, device=src.device)
-        finished = torch.zeros(B, dtype=torch.bool, device=src.device)
+    def greedy_or_topk(self, src, max_len=20, sos=None, eos=None, k=1):
+        """
+        Greedy oder Top-k Decoding für den Transformer.
+        """
+        device = src.device
+        batch_size = src.size(0)
 
-        for _ in range(max_len):
-            logits = self._decode(ys, memory, src_key_mask)
-            step_logits = logits[:, -1, :]
-            if k == 1:
-                next_token = step_logits.argmax(-1)
+        if sos is None:
+            sos = getattr(self, "sos_idx", None)
+            if sos is None:
+                raise ValueError("SOS-Index fehlt. Bitte sos übergeben oder self.sos_idx setzen.")
+        if eos is None:
+            eos = getattr(self, "eos_idx", None)
+
+        # Start mit SOS
+        ys = torch.full((batch_size, 1), sos, dtype=torch.long, device=device)
+
+        for _ in range(max_len-1):
+            out = self.forward(src, ys)
+            next_token_logits = out[:, -1, :]
+
+            if k > 1:
+                # Top-k Sampling
+                topk_probs, topk_idx = torch.topk(torch.softmax(next_token_logits, dim=-1), k)
+                next_tokens = topk_idx[torch.arange(batch_size), torch.multinomial(topk_probs, 1).squeeze(-1)]
             else:
-                probs = torch.softmax(step_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
-            ys = torch.cat([ys, next_token.unsqueeze(1)], dim=1)
-            finished |= next_token.eq(eos_idx)
-            if finished.all():
+                # Greedy
+                next_tokens = next_token_logits.argmax(dim=-1)
+
+            ys = torch.cat([ys, next_tokens.unsqueeze(1)], dim=1)
+
+            # Abbruch falls EOS überall erreicht
+            if eos is not None and (ys[:, -1] == eos).all():
                 break
+
         return ys
