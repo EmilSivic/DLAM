@@ -6,22 +6,38 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 def print_model_info(model, params):
     """Print model configuration and key hyperparameters."""
-    cfg = model.config if hasattr(model, "config") else None
-    print("\n=== Model configuration ===")
+    print("===========================\n")
+    print("Model configuration: ")
     print("Model:", getattr(model, "name_or_path", type(model).__name__))
-    if cfg:
+    # HuggingFace Modelle (haben .config)
+    if hasattr(model, "config"):
+        cfg = model.config
         print("Embedding dim:", getattr(cfg, "d_model", None))
         print("Hidden dim:", getattr(cfg, "d_ff", None))
         print("Num layers:", getattr(cfg, "num_layers", None))
         print("Dropout:", getattr(cfg, "dropout_rate", getattr(cfg, "dropout", None)))
+
+    # Eigene Seq2Seq-Modelle (Encoder/Decoder haben Attribute)
+    elif hasattr(model, "encoder") and hasattr(model, "decoder"):
+        enc = model.encoder
+        dec = model.decoder
+        print("Embedding dim:", getattr(enc, "embedding_dim", None))
+        print("Hidden dim:", getattr(enc, "hidden_dim", None))
+        print("Encoder layers:", getattr(enc, "num_layers", None))
+        print("Decoder layers:", getattr(dec, "num_layers", None))
+        print("Dropout:", getattr(enc, "dropout", None))
+
+    # immer Basis-Hyperparameter aus params
     print("Batch size:", params.get("batch_size"))
     print("Learning rate:", params.get("lr"))
     print("Weight decay:", params.get("weight_decay"))
+
     # Gesamtanzahl Parameter
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameters: {trainable_params:,} trainable / {total_params:,} total")
     print("===========================\n")
+
 
 
 def log_results(base_dir, model_name, params,

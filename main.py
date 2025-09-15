@@ -16,6 +16,7 @@ CKPT_DIR = os.environ.get("CKPT_DIR", "./checkpoints")
 RESULTS_DIR = "/content/drive/MyDrive/DLAM_Project/results"
 os.makedirs(CKPT_DIR, exist_ok=True)
 
+
 # seq2seq wrapper
 class Seq2Seq(nn.Module):
     def __init__(self, encoder, decoder, device, sos_idx, pad_idx):
@@ -50,16 +51,17 @@ class Seq2Seq(nn.Module):
 
         return outputs
 
+
 # name for logging
 def get_model_name(enc, dec):
     return f"LSTM_{enc.embedding_dim}emb_{enc.hidden_dim}hid_{enc.num_layers}ly_{enc.dropout:.1f}drop"
 
-# training loop
-train_losses_all = []
-val_losses_all = []
 
+# training loop
 def train(model, train_loader, val_loader, optimizer, criterion, dataset,
-          num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
+          model_tag, num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
+    train_losses_all, val_losses_all = [], []
+
     best_val_loss = float("inf")
     best_val_ppl = float("inf")
     best_val_acc = best_val_bleu = best_val_em = best_val_jacc = 0.0
@@ -91,7 +93,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
             optimizer.zero_grad()
             logits = model(src, trg, src_lengths, teacher_forcing_ratio=teacher_forcing_ratio)
 
-            logits_flat  = logits[:, 1:, :].contiguous().view(-1, logits.size(-1))
+            logits_flat = logits[:, 1:, :].contiguous().view(-1, logits.size(-1))
             targets_flat = trg[:, 1:].contiguous().view(-1)
 
             loss = criterion(logits_flat, targets_flat)
@@ -103,7 +105,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
 
         train_loss = total_loss / len(train_loader)
 
-        # use shared logger.evaluate
+        # shared evaluate
         val_loss, val_ppl, val_acc, val_bleu, val_em, val_jacc = evaluate(
             model, val_loader, None, DEVICE, pad_idx=pad_idx
         )
@@ -114,13 +116,13 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
             best_val_acc = val_acc
             best_val_bleu, best_val_em, best_val_jacc = val_bleu, val_em, val_jacc
             best_epoch = epoch
-            ckpt_path = os.path.join(CKPT_DIR, f"best_epoch{epoch}_ppl{val_ppl:.2f}.pt")
+            ckpt_path = os.path.join(CKPT_DIR, f"{model_tag}_epoch{epoch}_ppl{val_ppl:.2f}.pt")
             torch.save(model.state_dict(), ckpt_path)
             print(f"Saved checkpoint: {ckpt_path}")
 
-        print(f"Epoch {epoch:02d} | "
-              f"Train loss {train_loss:.4f} | Val loss {val_loss:.4f} (ppl {val_ppl:.2f}) | "
-              f"Val token-acc {val_acc*100:.1f}% | BLEU {val_bleu:.3f} | EM {val_em*100:.1f}% | Jacc {val_jacc*100:.1f}%")
+        print(f"[{model_tag}] Epoch {epoch:02d} | "
+              f"Train {train_loss:.4f} | Val {val_loss:.4f} (ppl {val_ppl:.2f}) | "
+              f"Acc {val_acc*100:.1f}% | BLEU {val_bleu:.3f} | EM {val_em*100:.1f}% | Jacc {val_jacc*100:.1f}%")
 
         train_losses_all.append(train_loss)
         val_losses_all.append(val_loss)
@@ -128,7 +130,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
     train_time = time.time() - start_time
     log_results(
         base_dir=RESULTS_DIR,
-        model_name=get_model_name(model.encoder, model.decoder),
+        model_name=f"{model_tag}_{get_model_name(model.encoder, model.decoder)}",
         params=params,
         best_epoch=best_epoch,
         best_val_loss=best_val_loss,
@@ -141,6 +143,17 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
         train_time=train_time,
         train_loss=train_losses_all[-1]
     )
+
+    # save loss curve
+    import matplotlib.pyplot as plt
+    plt.plot(train_losses_all, label="Train Loss")
+    plt.plot(val_losses_all, label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig(f"loss_plot_{model_tag}.png")
+    plt.close()
+
 
 if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
@@ -162,45 +175,47 @@ if __name__ == "__main__":
     vocab_ds = base_dataset(train_set)
 
     train_loader = DataLoader(train_set, batch_size=256, shuffle=True, collate_fn=collate_fn)
-    val_loader   = DataLoader(val_set, batch_size=256, shuffle=False, collate_fn=collate_fn)
+    val_loader = DataLoader(val_set, batch_size=256, shuffle=False, collate_fn=collate_fn)
 
-    enc = EncoderRNN(
-        len(vocab_ds.input_vocab), 512, 512,
-        num_layers=4, dropout=0.3, bidirectional=True
-    )
+    # model configs: small → xl
+    configs = {
+        "small":  {"emb": 256, "hid": 256, "layers": 2, "dropout": 0.2, "bidir": True},
+        "medium": {"emb": 512, "hid": 512, "layers": 2, "dropout": 0.3, "bidir": True},
+        "large":  {"emb": 512, "hid": 512, "layers": 4, "dropout": 0.3, "bidir": True},
+        "xl":     {"emb": 1024, "hid": 512, "layers": 4, "dropout": 0.4, "bidir": True},
+    }
 
-    # enc_dim
-    enc_dim = enc.hidden_dim * (2 if getattr(enc, "bidirectional", False) else 1)
+    for tag, cfg in configs.items():
+        print(f"\n=== Training {tag.upper()} model ===")
 
-    dec = DecoderRNN(
-        len(vocab_ds.target_vocab), 512, 512,
-        enc_dim=enc_dim,
-        num_layers=4, dropout=0.3
-    )
+        enc = EncoderRNN(
+            len(vocab_ds.input_vocab), cfg["emb"], cfg["hid"],
+            num_layers=cfg["layers"], dropout=cfg["dropout"], bidirectional=cfg["bidir"]
+        )
+        enc_dim = enc.hidden_dim * (2 if enc.bidirectional else 1)
 
-    model = Seq2Seq(
-        enc, dec, DEVICE,
-        sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
-        pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]
-    ).to(DEVICE)
+        dec = DecoderRNN(
+            len(vocab_ds.target_vocab), cfg["emb"], cfg["hid"],
+            enc_dim=enc_dim,
+            num_layers=cfg["layers"], dropout=cfg["dropout"]
+        )
 
-    pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.3, patience=2)
+        model = Seq2Seq(
+            enc, dec, DEVICE,
+            sos_idx=vocab_ds.target_vocab.word2idx["<SOS>"],
+            pad_idx=vocab_ds.target_vocab.word2idx["<PAD>"]
+        ).to(DEVICE)
 
-    train(model, train_loader, val_loader, optimizer, criterion,
-          dataset=vocab_ds,
-          num_epochs=8,
-          pad_idx=pad_idx,
-          teacher_forcing_ratio=0.5)
+        pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
+        criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.3, patience=2
+        )
 
-    # loss curve speichern
-    import matplotlib.pyplot as plt
-    plt.plot(train_losses_all, label="Train Loss")
-    plt.plot(val_losses_all, label="Val Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.savefig("loss_plot.png")
-    plt.close()
+        train(model, train_loader, val_loader, optimizer, criterion,
+              dataset=vocab_ds,
+              model_tag=tag,
+              num_epochs=2,
+              pad_idx=pad_idx,
+              teacher_forcing_ratio=0.5)
