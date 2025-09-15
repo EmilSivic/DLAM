@@ -209,4 +209,4 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
         train(model, train_loader, val_loader, optimizer, criterion,
-              dataset=vocab_ds, model_tag=tag, num_epochs=2, pad_idx=pad_idx, teacher_forcing_ratio=0.5)
+              dataset=vocab_ds, model_tag=tag, num_epochs=1, pad_idx=pad_idx, teacher_forcing_ratio=0.5)
