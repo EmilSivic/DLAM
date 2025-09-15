@@ -1,14 +1,16 @@
 import sys, os, time, torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
-
-from transformer.transformer_model import Seq2SeqTransformer
 import matplotlib.pyplot as plt
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from dataset import RecipeDataset, collate_fn
 
-# Logging import
+# === Fix for relative imports (works in Colab + locally) ===
+FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
+sys.path.insert(0, ROOT_DIR)
+
+# now imports always work
+from dataset import RecipeDataset, collate_fn
+from transformer.transformer_model import Seq2SeqTransformer
 from logger import log_results, evaluate, print_model_info
 
 # === Config ===
