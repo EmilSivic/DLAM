@@ -1,63 +1,22 @@
 import os
+import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from model import EncoderRNN, DecoderRNN
+from logger import log_results, evaluate, print_model_info
 
-import csv
-import time
-
-LOGFILE = "experiment_log.csv"
-
-def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss):
-    """
-    Schreibt Ergebnisse in eine CSV-Datei.
-    """
-    file_exists = os.path.isfile(LOGFILE)
-    with open(LOGFILE, mode="a", newline="") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow([
-                "model", "embedding_dim", "hidden_dim", "num_layers", "dropout",
-                "batch_size", "lr", "weight_decay",
-                "best_epoch", "best_val_loss", "best_val_ppl", "best_val_acc",
-                "train_loss", "gen_gap", "train_time"
-            ])
-
-        gen_gap = best_val_loss - train_loss
-        writer.writerow([
-            model_name,
-            params.get("embedding_dim"),
-            params.get("hidden_dim"),
-            params.get("num_layers"),
-            params.get("dropout"),
-            params.get("batch_size"),
-            params.get("lr"),
-            params.get("weight_decay"),
-            best_epoch,
-            round(best_val_loss, 4),
-            round(best_val_ppl, 2),
-            round(best_val_acc * 100, 2),
-            round(train_loss, 4),
-            round(gen_gap, 4),
-            round(train_time, 2)
-        ])
-
-# function to name the model
-def get_model_name(enc, dec):
-    return f"LSTM_{enc.embedding_dim}emb_{enc.hidden_dim}hid_{enc.num_layers}ly_{enc.dropout:.1f}drop"
-
-# configurations
+# configs
 DEFAULT_DATA_PATH = "data/processed_recipes.csv"
 DATA_PATH = os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GRAD_CLIP = 1.0
 CKPT_DIR = os.environ.get("CKPT_DIR", "./checkpoints")
+RESULTS_DIR = "/content/drive/MyDrive/DLAM_Project/results"
 os.makedirs(CKPT_DIR, exist_ok=True)
 
-
-# train encoder and decoder end to end
+# seq2seq wrapper
 class Seq2Seq(nn.Module):
     def __init__(self, encoder, decoder, device, sos_idx, pad_idx):
         super().__init__()
@@ -71,10 +30,8 @@ class Seq2Seq(nn.Module):
         batch_size, trg_len = trg.size()
         vocab_size = self.decoder.fc_out.out_features
 
-        # Encoder
         encoder_outputs, hidden, cell = self.encoder(src, src_length)
 
-        # Maske passend zu encoder_outputs
         seq_len = encoder_outputs.size(1)
         src_mask = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(batch_size, -1)
         src_mask = src_mask < src_length.unsqueeze(1).to(self.device)
@@ -93,96 +50,33 @@ class Seq2Seq(nn.Module):
 
         return outputs
 
+# name for logging
+def get_model_name(enc, dec):
+    return f"LSTM_{enc.embedding_dim}emb_{enc.hidden_dim}hid_{enc.num_layers}ly_{enc.dropout:.1f}drop"
 
-@torch.no_grad()
-def greedy_decode_one(model, dataset, title_ids, title_len, max_len=15, k=5, temperature=1.0):
-    model.eval()
-
-    encoder_outputs, hidden, cell = model.encoder(
-        title_ids.unsqueeze(0).to(DEVICE),
-        title_len.unsqueeze(0).to(DEVICE)
-    )
-
-    seq_len = encoder_outputs.size(1)
-    src_mask = torch.arange(seq_len, device=DEVICE).unsqueeze(0) < title_len.unsqueeze(0).to(DEVICE)
-
-    sos_idx = dataset.target_vocab.word2idx["<SOS>"]
-    eos_idx = dataset.target_vocab.word2idx["<EOS>"]
-    input_token = torch.tensor([sos_idx], device=DEVICE)
-
-    out_tokens = []
-    for _ in range(max_len):
-        logits, hidden, cell, _ = model.decoder(
-            input_token, hidden, cell, encoder_outputs, mask=src_mask
-        )
-
-        logits = logits / temperature
-        probs = torch.softmax(logits, dim=-1)
-
-        topk_probs, topk_idx = torch.topk(probs, k)
-        next_id = topk_idx[0, torch.multinomial(topk_probs, 1)]
-
-        tok = int(next_id.item())
-        if tok == eos_idx:
-            break
-
-        word = dataset.target_vocab.idx2word.get(tok, "<UNK>")
-        out_tokens.append(word)
-
-        # <<< hier war der Bug: next_id.unsqueeze(0) macht 2D >>>
-        input_token = next_id.view(1)   # sicherstellen: shape [1]
-
-    return out_tokens
-
-
-
-
-
-
-
-
-@torch.no_grad()
-def evaluate(model, loader, criterion, pad_idx):
-    model.eval()
-    total_loss = 0.0
-    total_tokens = 0
-    total_correct = 0
-
-    for batch in loader:
-        src = batch["input_ids"].to(DEVICE)
-        trg = batch["target_ids"].to(DEVICE)
-        src_lengths = batch["input_lengths"].to(DEVICE)
-
-        logits = model(src, trg, src_lengths, teacher_forcing_ratio=0.0)
-
-        logits_flat  = logits[:, 1:, :].contiguous().view(-1, logits.size(-1))
-        targets_flat = trg[:, 1:].contiguous().view(-1)
-        loss = criterion(logits_flat, targets_flat)
-        total_loss += loss.item()
-
-        preds = logits[:, 1:, :].argmax(dim=-1)
-        gold  = trg[:, 1:]
-        mask  = (gold != pad_idx)
-        correct = (preds == gold) & mask
-        total_correct += correct.sum().item()
-        total_tokens  += mask.sum().item()
-
-    avg_loss = total_loss / max(1, len(loader))
-    ppl = float(torch.exp(torch.tensor(avg_loss)))
-    acc = (total_correct / total_tokens) if total_tokens > 0 else 0.0
-    return avg_loss, ppl, acc
-
-
+# training loop
 train_losses_all = []
 val_losses_all = []
 
 def train(model, train_loader, val_loader, optimizer, criterion, dataset,
           num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
+    best_val_loss = float("inf")
     best_val_ppl = float("inf")
-    best_val_loss = None
-    best_val_acc = None
+    best_val_acc = best_val_bleu = best_val_em = best_val_jacc = 0.0
     best_epoch = None
     start_time = time.time()
+
+    # params for logging
+    params = {
+        "embedding_dim": model.encoder.embedding_dim,
+        "hidden_dim": model.encoder.hidden_dim,
+        "num_layers": model.encoder.num_layers,
+        "dropout": model.encoder.dropout,
+        "batch_size": train_loader.batch_size,
+        "lr": optimizer.param_groups[0]["lr"],
+        "weight_decay": optimizer.param_groups[0]["weight_decay"],
+    }
+    print_model_info(model, params)
 
     for epoch in range(1, num_epochs + 1):
         teacher_forcing_ratio = max(0.5 * (0.95 ** epoch), 0.1)
@@ -208,50 +102,49 @@ def train(model, train_loader, val_loader, optimizer, criterion, dataset,
             total_loss += loss.item()
 
         train_loss = total_loss / len(train_loader)
-        train_ppl = float(torch.exp(torch.tensor(train_loss)))
 
-        val_loss, val_ppl, val_acc = evaluate(model, val_loader, criterion, pad_idx)
-        scheduler.step(val_loss)
+        # use shared logger.evaluate
+        val_loss, val_ppl, val_acc, val_bleu, val_em, val_jacc = evaluate(
+            model, val_loader, None, DEVICE, pad_idx=pad_idx
+        )
 
         if val_ppl < best_val_ppl:
             best_val_ppl = val_ppl
             best_val_loss = val_loss
             best_val_acc = val_acc
+            best_val_bleu, best_val_em, best_val_jacc = val_bleu, val_em, val_jacc
             best_epoch = epoch
             ckpt_path = os.path.join(CKPT_DIR, f"best_epoch{epoch}_ppl{val_ppl:.2f}.pt")
             torch.save(model.state_dict(), ckpt_path)
             print(f"Saved checkpoint: {ckpt_path}")
 
         print(f"Epoch {epoch:02d} | "
-              f"Train loss {train_loss:.4f} (ppl {train_ppl:.2f})  | "
-              f"Val loss {val_loss:.4f} (ppl {val_ppl:.2f})  | "
-              f"Val token-acc {val_acc*100:.1f}%")
-
-        sample_title = batch["input_ids"][0]
-        sample_len   = batch["input_lengths"][0]
-        prediction = greedy_decode_one(model, dataset, sample_title, sample_len)
-        print("  Predicted:", prediction[:12])
+              f"Train loss {train_loss:.4f} | Val loss {val_loss:.4f} (ppl {val_ppl:.2f}) | "
+              f"Val token-acc {val_acc*100:.1f}% | BLEU {val_bleu:.3f} | EM {val_em*100:.1f}% | Jacc {val_jacc*100:.1f}%")
 
         train_losses_all.append(train_loss)
         val_losses_all.append(val_loss)
 
     train_time = time.time() - start_time
-    params = {
-        "embedding_dim": model.encoder.embedding_dim,
-        "hidden_dim": model.encoder.hidden_dim,
-        "num_layers": model.encoder.num_layers,
-        "dropout": model.encoder.dropout,
-        "batch_size": train_loader.batch_size,
-        "lr": optimizer.param_groups[0]["lr"],
-        "weight_decay": optimizer.param_groups[0]["weight_decay"],
-    }
-    model_name = get_model_name(model.encoder, model.decoder)
-    log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl, best_val_acc, train_time, train_loss)
+    log_results(
+        base_dir=RESULTS_DIR,
+        model_name=get_model_name(model.encoder, model.decoder),
+        params=params,
+        best_epoch=best_epoch,
+        best_val_loss=best_val_loss,
+        best_val_ppl=best_val_ppl,
+        best_val_acc=best_val_acc,
+        best_val_bleu=best_val_bleu,
+        best_val_em=best_val_em,
+        best_val_jacc=best_val_jacc,
+        gpu_mem=(torch.cuda.max_memory_allocated(DEVICE)//(1024**2)) if torch.cuda.is_available() else 0,
+        train_time=train_time,
+        train_loss=train_losses_all[-1]
+    )
 
 if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
-
-    use_subset = 50000  # None für Vollgröße
+    use_subset = 50000
     if use_subset is not None:
         dataset = torch.utils.data.Subset(dataset, range(use_subset))
 
@@ -266,22 +159,18 @@ if __name__ == "__main__":
         while isinstance(ds, tud.Subset):
             ds = ds.dataset
         return ds
-
     vocab_ds = base_dataset(train_set)
 
     train_loader = DataLoader(train_set, batch_size=256, shuffle=True, collate_fn=collate_fn)
     val_loader   = DataLoader(val_set, batch_size=256, shuffle=False, collate_fn=collate_fn)
 
-    # Encoder BIDIREKTIONAL
     enc = EncoderRNN(
         len(vocab_ds.input_vocab), 512, 256,
         num_layers=2, dropout=0.3, bidirectional=True
     )
-
-    # Decoder mit enc_dim = 2 * hidden_dim (weil bidirectional)
     dec = DecoderRNN(
         len(vocab_ds.target_vocab), 512, 256,
-        enc_dim=1024,  # wichtig!
+        enc_dim=1024,  # bidirectional => 2*hidden
         num_layers=2, dropout=0.3
     )
 
@@ -294,8 +183,7 @@ if __name__ == "__main__":
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.3, patience=2)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.3, patience=2)
 
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
@@ -303,6 +191,7 @@ if __name__ == "__main__":
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
 
+    # loss curve speichern
     import matplotlib.pyplot as plt
     plt.plot(train_losses_all, label="Train Loss")
     plt.plot(val_losses_all, label="Val Loss")
