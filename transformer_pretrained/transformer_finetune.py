@@ -8,9 +8,6 @@ import matplotlib.pyplot as plt
 from Compare.logger import log_results, evaluate, print_model_info
 
 
-# config
-from logger import log_results, evaluate, print_model_info
-
 # --- cfg ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 seed = 42
