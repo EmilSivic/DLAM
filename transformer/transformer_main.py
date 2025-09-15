@@ -2,7 +2,7 @@ import sys, os, time, torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
-from .transformer_model import Seq2SeqTransformer
+from transformer.transformer_model import Seq2SeqTransformer
 import matplotlib.pyplot as plt
 
 # Logging import
