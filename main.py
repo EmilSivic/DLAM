@@ -165,13 +165,13 @@ if __name__ == "__main__":
     val_loader   = DataLoader(val_set, batch_size=256, shuffle=False, collate_fn=collate_fn)
 
     enc = EncoderRNN(
-        len(vocab_ds.input_vocab), 512, 256,
-        num_layers=2, dropout=0.3, bidirectional=True
+        len(vocab_ds.input_vocab), 512, 512,
+        num_layers=4, dropout=0.3, bidirectional=True
     )
     dec = DecoderRNN(
-        len(vocab_ds.target_vocab), 512, 256,
+        len(vocab_ds.target_vocab), 512, 512,
         enc_dim=512,  # korrekt
-        num_layers=2, dropout=0.3
+        num_layers=4, dropout=0.3
     )
 
     model = Seq2Seq(
@@ -187,7 +187,7 @@ if __name__ == "__main__":
 
     train(model, train_loader, val_loader, optimizer, criterion,
           dataset=vocab_ds,
-          num_epochs=2,
+          num_epochs=8,
           pad_idx=pad_idx,
           teacher_forcing_ratio=0.5)
 
