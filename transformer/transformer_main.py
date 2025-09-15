@@ -142,4 +142,4 @@ if __name__=="__main__":
         return (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    train(model, train_loader, val_loader, optimizer, criterion, 20, pad_idx, scheduler)
+    train(model, train_loader, val_loader, optimizer, criterion, 2, pad_idx, scheduler)
