@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, random_split
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from torch.optim import AdamW
 import matplotlib.pyplot as plt
-from Compare.logger import log_results, evaluate, print_model_info
+from logger import log_results, evaluate, print_model_info
 
 
 # --- cfg ---
