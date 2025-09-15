@@ -64,7 +64,7 @@ class RecipeDataset(torch.utils.data.Dataset):
         }
 
 # train
-def train_model(dataset, batch_size=16, num_epochs=10, results_dir="/content/drive/MyDrive/DLAM_Project/results"):
+def train_model(dataset, batch_size=16, num_epochs=15, results_dir="/content/drive/MyDrive/DLAM_Project/results"):
     n_total = len(dataset)
     n_val = int(0.2 * n_total)
     n_train = n_total - n_val
@@ -202,4 +202,4 @@ def train_model(dataset, batch_size=16, num_epochs=10, results_dir="/content/dri
 
 if __name__ == "__main__":
     dataset = RecipeDataset("/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv", tokenizer)
-    train_model(dataset, batch_size=16, num_epochs=1)
+    train_model(dataset, batch_size=16, num_epochs=15)

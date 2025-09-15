@@ -42,7 +42,7 @@ def get_model_name(enc, dec):
     return f"LSTM_{enc.embedding_dim}emb_{enc.hidden_dim}hid_{enc.num_layers}ly_{enc.dropout:.1f}drop"
 
 def train(model, train_loader, val_loader, optimizer, criterion, dataset,
-          model_tag, num_epochs=10, pad_idx=0, teacher_forcing_ratio=0.5):
+          model_tag, num_epochs=15, pad_idx=0, teacher_forcing_ratio=0.5):
     train_losses, val_losses = [], []
     best_val_loss = float("inf")
     best_val_ppl = float("inf")
@@ -209,4 +209,4 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
         train(model, train_loader, val_loader, optimizer, criterion,
-              dataset=vocab_ds, model_tag=tag, num_epochs=1, pad_idx=pad_idx, teacher_forcing_ratio=0.5)
+              dataset=vocab_ds, model_tag=tag, num_epochs=15, pad_idx=pad_idx, teacher_forcing_ratio=0.5)
