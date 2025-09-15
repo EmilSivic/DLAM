@@ -6,7 +6,10 @@ from torch.utils.data import DataLoader, random_split
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from torch.optim import AdamW
 
-
+import sys, os
+FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
+sys.path.insert(0, ROOT_DIR)
 from logger import log_results, evaluate, print_model_info
 
 # config
