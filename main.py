@@ -170,7 +170,7 @@ if __name__ == "__main__":
     )
     dec = DecoderRNN(
         len(vocab_ds.target_vocab), 512, 256,
-        enc_dim=1024,  # bidirectional => 2*hidden
+        enc_dim=512,  # korrekt
         num_layers=2, dropout=0.3
     )
 
