@@ -1,171 +1,36 @@
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-import os, time, csv, torch
+import sys, os, time, torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from dataset import RecipeDataset, collate_fn
 from transformer_model import Seq2SeqTransformer
 import matplotlib.pyplot as plt
 
-LOGFILE = "experiment_log.csv"
+# Logging import
+from logger import log_results, evaluate, print_model_info
+
+# === Config ===
 DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CKPT_DIR = os.environ.get("CKPT_DIR", "./checkpoints")
+RESULTS_DIR = "/content/drive/MyDrive/DLAM_Project/results"
 os.makedirs(CKPT_DIR, exist_ok=True)
-
-train_losses_all, val_losses_all = [], []
-
-def log_results(model_name, params, best_epoch, best_val_loss, best_val_ppl,
-                best_val_acc, best_val_bleu, best_val_em,
-                train_time, train_loss):
-    file_exists = os.path.isfile(LOGFILE)
-    with open(LOGFILE, "a", newline="") as f:
-        w = csv.writer(f)
-        if not file_exists:
-            w.writerow([
-                "model","embedding_dim","hidden_dim","num_layers","dropout",
-                "batch_size","lr","weight_decay",
-                "best_epoch","best_val_loss","best_val_ppl",
-                "best_val_acc","best_val_bleu","best_val_em",
-                "train_loss","gen_gap","train_time"
-            ])
-        w.writerow([
-            model_name, params["embedding_dim"], params["hidden_dim"],
-            params["num_layers"], params["dropout"], params["batch_size"],
-            params["lr"], params["weight_decay"], best_epoch,
-            round(best_val_loss,4), round(best_val_ppl,2),
-            round(best_val_acc*100,2), round(best_val_bleu,3),
-            round(best_val_em*100,2),
-            round(train_loss,4), round(best_val_loss-train_loss,4),
-            round(train_time,2)
-        ])
-
 
 def get_model_name_t(m):
     return f"TRANS_d{m.embedding_dim}_layers{m.num_layers}_drop{m.dropout:.1f}"
 
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-
-@torch.no_grad()
-def evaluate(model, loader, criterion, pad_idx, max_len=20):
-    model.eval()
-    total_loss, total_tokens, total_correct = 0,0,0
-    total_bleu, total_em, n_samples = 0,0,0
-
-    smoothie = SmoothingFunction().method4
-
-    for batch in loader:
-        src = batch["input_ids"].to(DEVICE)
-        trg = batch["target_ids"].to(DEVICE)
-
-        # teacher forcing loss
-        logits = model(src, trg)
-        logits_flat = logits[:,1:,:].reshape(-1, logits.size(-1))
-        targets_flat = trg[:,1:].reshape(-1)
-        loss = criterion(logits_flat, targets_flat)
-        total_loss += loss.item()
-
-        # accuracy
-        preds = logits[:,1:,:].argmax(-1)
-        gold = trg[:,1:]
-        mask = (gold != pad_idx)
-        total_correct += ((preds==gold)&mask).sum().item()
-        total_tokens += mask.sum().item()
-
-        # generation for BLEU / EM
-        sos = vocab_ds.target_vocab.word2idx["<SOS>"]
-        eos = vocab_ds.target_vocab.word2idx["<EOS>"]
-        outputs = model.greedy_or_topk(src, max_len, sos, eos)
-
-        for i in range(src.size(0)):
-            pred_ids = outputs[i].tolist()
-            gold_ids = trg[i].tolist()
-
-            # cut at EOS
-            if eos in pred_ids:
-                pred_ids = pred_ids[1:pred_ids.index(eos)]
-            else:
-                pred_ids = pred_ids[1:]
-            if eos in gold_ids:
-                gold_ids = gold_ids[1:gold_ids.index(eos)]
-            else:
-                gold_ids = gold_ids[1:]
-
-            pred_tokens = [vocab_ds.target_vocab.idx2word[x] for x in pred_ids]
-            gold_tokens = [vocab_ds.target_vocab.idx2word[x] for x in gold_ids]
-
-            # BLEU
-            bleu = sentence_bleu([gold_tokens], pred_tokens, smoothing_function=smoothie)
-            total_bleu += bleu
-
-            # Exact Match
-            total_em += int(pred_tokens == gold_tokens)
-            n_samples += 1
-
-    avg_loss = total_loss/len(loader)
-    ppl = float(torch.exp(torch.tensor(avg_loss)))
-    acc = total_correct/total_tokens if total_tokens>0 else 0
-    bleu_score = total_bleu/n_samples if n_samples>0 else 0
-    em_score = total_em/n_samples if n_samples>0 else 0
-    return avg_loss, ppl, acc, bleu_score, em_score
-
-
 def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad_idx, scheduler=None):
+    best_val_loss = float("inf")
     best_val_ppl = float("inf")
-    best_val_loss = best_val_acc = best_val_bleu = best_val_em = best_epoch = None
+    best_val_acc = best_val_bleu = best_val_em = best_val_jacc = 0.0
+    best_epoch = None
+    train_losses, val_losses = [], []
     start = time.time()
 
-    for epoch in range(1, num_epochs+1):
-        model.train()
-        total_loss=0
-        for batch in train_loader:
-            src = batch["input_ids"].to(DEVICE)
-            trg = batch["target_ids"].to(DEVICE)
-            optimizer.zero_grad()
-            logits = model(src, trg)
-            logits_flat = logits[:,1:,:].reshape(-1, logits.size(-1))
-            targets_flat = trg[:,1:].reshape(-1)
-            loss = criterion(logits_flat, targets_flat)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            if scheduler: scheduler.step()   # step per batch for Noam
-            total_loss += loss.item()
+    # Reset GPU stats
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(DEVICE)
 
-        train_loss = total_loss/len(train_loader)
-        train_ppl = float(torch.exp(torch.tensor(train_loss)))
-
-        val_loss, val_ppl, val_acc, val_bleu, val_em = evaluate(model, val_loader, criterion, pad_idx)
-
-        # store for plotting
-        train_losses_all.append(train_loss)
-        val_losses_all.append(val_loss)
-
-        if val_ppl < best_val_ppl:
-            best_val_ppl, best_val_loss = val_ppl, val_loss
-            best_val_acc, best_val_bleu, best_val_em, best_epoch = val_acc, val_bleu, val_em, epoch
-            torch.save(model.state_dict(), os.path.join(CKPT_DIR, f"transformer_epoch{epoch}_ppl{val_ppl:.2f}.pt"))
-
-        print(f"Epoch {epoch} | train {train_loss:.4f} | val {val_loss:.4f} "
-              f"(ppl {val_ppl:.2f}) | acc {val_acc * 100:.1f}% | "
-              f"BLEU {val_bleu:.3f} | EM {val_em * 100:.1f}%")
-
-        sample = batch["input_ids"][0:1].to(DEVICE)
-        sos = vocab_ds.target_vocab.word2idx["<SOS>"]; eos = vocab_ds.target_vocab.word2idx["<EOS>"]
-        out_ids = model.greedy_or_topk(sample, 15, sos, eos)[0].tolist()
-        words = [vocab_ds.target_vocab.idx2word.get(i,"<UNK>") for i in out_ids[1:]]
-        print("  Pred:", words[:12])
-
-    # after training, plot losses
-    plt.plot(train_losses_all, label="Train")
-    plt.plot(val_losses_all, label="Val")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.savefig("loss_plot.png")
-    plt.close()
-
-    train_time = time.time()-start
+    # Hyperparams dict for logging
     params = {
         "embedding_dim": model.embedding_dim,
         "hidden_dim": model.hidden_dim,
@@ -175,22 +40,83 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
         "lr": optimizer.param_groups[0]["lr"],
         "weight_decay": optimizer.param_groups[0].get("weight_decay",0.0)
     }
-    log_results(get_model_name_t(model), params,
-                best_epoch, best_val_loss, best_val_ppl,
-                best_val_acc, best_val_bleu, best_val_em,
-                train_time, train_loss)
+    print_model_info(model, params)
 
+    for epoch in range(1, num_epochs+1):
+        model.train()
+        total_loss=0
+        for batch in train_loader:
+            src = batch["input_ids"].to(DEVICE)
+            trg = batch["target_ids"].to(DEVICE)
+
+            optimizer.zero_grad()
+            logits = model(src, trg)
+            logits_flat = logits[:,1:,:].reshape(-1, logits.size(-1))
+            targets_flat = trg[:,1:].reshape(-1)
+            loss = criterion(logits_flat, targets_flat)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            if scheduler: scheduler.step()
+            total_loss += loss.item()
+
+        train_loss = total_loss/len(train_loader)
+
+        # use logger.evaluate for consistency (returns loss, ppl, acc, bleu, em, jacc)
+        val_loss, val_ppl, val_acc, val_bleu, val_em, val_jacc = evaluate(
+            model, val_loader, None, DEVICE
+        )
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+
+        print(f"Epoch {epoch} | train {train_loss:.4f} | val {val_loss:.4f} "
+              f"(ppl {val_ppl:.2f}) | acc {val_acc * 100:.1f}% | "
+              f"BLEU {val_bleu:.3f} | EM {val_em * 100:.1f}% | Jacc {val_jacc*100:.1f}%")
+
+        if val_loss < best_val_loss:
+            best_val_loss, best_val_ppl = val_loss, val_ppl
+            best_val_acc, best_val_bleu, best_val_em, best_val_jacc = val_acc, val_bleu, val_em, val_jacc
+            best_epoch = epoch
+            torch.save(model.state_dict(), os.path.join(CKPT_DIR, f"transformer_epoch{epoch}_ppl{val_ppl:.2f}.pt"))
+
+    # plot losses
+    plt.plot(train_losses, label="Train")
+    plt.plot(val_losses, label="Val")
+    plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.legend()
+    plt.savefig("loss_plot.png"); plt.close()
+
+    train_time = time.time()-start
+    gpu_mem = (torch.cuda.max_memory_allocated(DEVICE)//(1024**2)) if torch.cuda.is_available() else 0
+
+    log_results(
+        base_dir=RESULTS_DIR,
+        model_name=get_model_name_t(model),
+        params=params,
+        best_epoch=best_epoch,
+        best_val_loss=best_val_loss,
+        best_val_ppl=best_val_ppl,
+        best_val_acc=best_val_acc,
+        best_val_bleu=best_val_bleu,
+        best_val_em=best_val_em,
+        best_val_jacc=best_val_jacc,
+        gpu_mem=gpu_mem,
+        train_time=train_time,
+        train_loss=train_losses[-1]
+    )
 
 if __name__=="__main__":
     dataset = RecipeDataset(DATA_PATH)
     use_subset=50000
-    if use_subset: from torch.utils.data import Subset; dataset=Subset(dataset, range(use_subset))
+    if use_subset:
+        from torch.utils.data import Subset
+        dataset=Subset(dataset, range(use_subset))
     n_val=int(len(dataset)*0.2); n_train=len(dataset)-n_val
     train_set, val_set = random_split(dataset, [n_train,n_val])
 
-    import torch.utils.data as tud
+    from torch.utils.data import Subset
     def base_dataset(ds):
-        while isinstance(ds,tud.Subset): ds=ds.dataset
+        while isinstance(ds, Subset): ds=ds.dataset
         return ds
     vocab_ds = base_dataset(train_set)
 
@@ -198,10 +124,12 @@ if __name__=="__main__":
     val_loader = DataLoader(val_set,batch_size=128,shuffle=False,collate_fn=collate_fn)
     pad_idx = vocab_ds.target_vocab.word2idx["<PAD>"]
 
-    model = Seq2SeqTransformer(len(vocab_ds.input_vocab), len(vocab_ds.target_vocab),
-                               d_model=256, nhead=4,
-                               num_encoder_layers=3, num_decoder_layers=3,
-                               dim_ff=1024, dropout=0.2, pad_idx=pad_idx).to(DEVICE)
+    model = Seq2SeqTransformer(
+        len(vocab_ds.input_vocab), len(vocab_ds.target_vocab),
+        d_model=256, nhead=4,
+        num_encoder_layers=3, num_decoder_layers=3,
+        dim_ff=1024, dropout=0.2, pad_idx=pad_idx
+    ).to(DEVICE)
 
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
 
