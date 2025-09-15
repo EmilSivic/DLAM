@@ -168,9 +168,13 @@ if __name__ == "__main__":
         len(vocab_ds.input_vocab), 512, 512,
         num_layers=4, dropout=0.3, bidirectional=True
     )
+
+    # enc_dim
+    enc_dim = enc.hidden_dim * (2 if getattr(enc, "bidirectional", False) else 1)
+
     dec = DecoderRNN(
         len(vocab_ds.target_vocab), 512, 512,
-        enc_dim=512,  # korrekt
+        enc_dim=enc_dim,
         num_layers=4, dropout=0.3
     )
 
