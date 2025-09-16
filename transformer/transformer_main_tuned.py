@@ -10,10 +10,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
 
-from dataset import RecipeDataset, collate_fn
 from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
 from logger import evaluate, print_model_info
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Dataset
+
+import pandas as pd
+import sentencepiece as spm
 
 # reproducibility
 SEED = 42
@@ -22,7 +24,55 @@ torch.cuda.manual_seed_all(SEED)
 
 # paths
 DATA_PATH = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
+SP_MODEL = "/content/drive/MyDrive/DLAM_Project/data/spm_recipes.model"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# === Train SentencePiece if not yet trained ===
+if not os.path.exists(SP_MODEL):
+    spm.SentencePieceTrainer.Train(
+        input=DATA_PATH,
+        model_prefix="/content/drive/MyDrive/DLAM_Project/data/spm_recipes",
+        vocab_size=8000,
+        model_type="bpe",
+        character_coverage=1.0
+    )
+
+sp = spm.SentencePieceProcessor()
+sp.load(SP_MODEL)
+
+
+def encode_pair(src_text, tgt_text, max_len=64):
+    src_ids = sp.encode(src_text, out_type=int)[:max_len]
+    tgt_ids = sp.encode(tgt_text, out_type=int)[:max_len]
+    return (
+        [sp.bos_id()] + src_ids + [sp.eos_id()],
+        [sp.bos_id()] + tgt_ids + [sp.eos_id()]
+    )
+
+
+class SPRecipeDataset(Dataset):
+    def __init__(self, csv_path, max_len=64):
+        df = pd.read_csv(csv_path)
+        self.data = []
+        for _, row in df.iterrows():
+            src, tgt = encode_pair(row["title"], row["ingredients"], max_len)
+            self.data.append({"input_ids": src, "target_ids": tgt})
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+def collate_fn_sp(batch):
+    from torch.nn.utils.rnn import pad_sequence
+    input_ids = [torch.tensor(x["input_ids"]) for x in batch]
+    target_ids = [torch.tensor(x["target_ids"]) for x in batch]
+    input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
+    target_ids = pad_sequence(target_ids, batch_first=True, padding_value=0)
+    return {"input_ids": input_ids, "target_ids": target_ids}
+
 
 # hyperparameters
 EMB_SIZE = 512
@@ -47,10 +97,9 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, num_
             tgt = batch["target_ids"].to(DEVICE)
 
             optimizer.zero_grad()
-            # input: all tokens except last
+            # teacher forcing: input all but last, predict all but first
             output = model(src, tgt[:, :-1])
 
-            # target: all tokens except first
             loss = criterion(
                 output.reshape(-1, output.shape[-1]),
                 tgt[:, 1:].reshape(-1)
@@ -77,14 +126,17 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, num_
 
 if __name__ == "__main__":
     # data
-    dataset = RecipeDataset(DATA_PATH)
+    dataset = SPRecipeDataset(DATA_PATH)
     n_val = int(len(dataset) * 0.2)
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val])
 
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
-    pad_idx = train_loader.dataset.dataset.target_vocab.word2idx["<PAD>"]
+    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn_sp)
+    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn_sp)
+
+    src_vocab_size = sp.get_piece_size()
+    tgt_vocab_size = sp.get_piece_size()
+    pad_idx = 0  # SentencePiece reserves ID=0 for <pad>
 
     # model
     model = Seq2SeqTransformerTuned(
@@ -92,8 +144,8 @@ if __name__ == "__main__":
         num_decoder_layers=NUM_DECODER_LAYERS,
         emb_size=EMB_SIZE,
         nhead=NHEAD,
-        src_vocab_size=len(train_loader.dataset.dataset.input_vocab),
-        tgt_vocab_size=len(train_loader.dataset.dataset.target_vocab),
+        src_vocab_size=src_vocab_size,
+        tgt_vocab_size=tgt_vocab_size,
         dim_feedforward=HIDDEN_DIM,
         dropout=DROPOUT,
         pad_idx=pad_idx
@@ -120,7 +172,8 @@ if __name__ == "__main__":
         "dropout": DROPOUT,
         "batch_size": BATCH_SIZE,
         "lr": LR,
-        "weight_decay": optimizer.param_groups[0].get("weight_decay", 0.0)
+        "weight_decay": optimizer.param_groups[0].get("weight_decay", 0.0),
+        "vocab_size": src_vocab_size
     })
 
     # train
