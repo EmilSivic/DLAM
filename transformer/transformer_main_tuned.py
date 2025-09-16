@@ -132,6 +132,6 @@ if __name__ == "__main__":
 
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.2)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9, weight_decay=1e-5)
-    scheduler = NoamScheduler(optimizer, d_model=model.embedding_dim, warmup_steps=4000)
+    scheduler = NoamScheduler(optimizer, d_model=model.emb_size, warmup_steps=4000)
 
     train(model, train_loader, val_loader, optimizer, criterion, 40, pad_idx, scheduler=scheduler, patience=7)
