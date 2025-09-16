@@ -5,12 +5,16 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader, random_split
 
-# Make sure we can import dataset.py from project root
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Make sure we can import from project root
+FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
+sys.path.insert(0, ROOT_DIR)
 
-from dataset import get_dataloaders
-from transformer_model_tuned import Seq2SeqTransformer  # tuned model class
+from dataset import RecipeDataset, collate_fn
+from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
+from logger import evaluate, print_model_info
 
 # === Hyperparameters ===
 EMB_SIZE = 512
@@ -25,34 +29,45 @@ EPOCHS = 15
 WARMUP_STEPS = 4000
 
 # === Data ===
-train_loader, val_loader, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE = get_dataloaders(batch_size=BATCH_SIZE)
+DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+dataset = RecipeDataset(DATA_PATH)
+n_val = int(len(dataset) * 0.2)
+n_train = len(dataset) - n_val
+train_set, val_set = random_split(dataset, [n_train, n_val])
+
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+
+pad_idx = train_loader.dataset.dataset.target_vocab.word2idx["<PAD>"]
 
 # === Model ===
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = Seq2SeqTransformer(
+model = Seq2SeqTransformerTuned(
+    src_vocab_size=len(train_loader.dataset.dataset.input_vocab),
+    tgt_vocab_size=len(train_loader.dataset.dataset.target_vocab),
+    d_model=EMB_SIZE,
+    nhead=NHEAD,
     num_encoder_layers=NUM_ENCODER_LAYERS,
     num_decoder_layers=NUM_DECODER_LAYERS,
-    emb_size=EMB_SIZE,
-    nhead=NHEAD,
-    src_vocab_size=SRC_VOCAB_SIZE,
-    tgt_vocab_size=TGT_VOCAB_SIZE,
-    dim_feedforward=HIDDEN_DIM,
-    dropout=DROPOUT
-).to(device)
+    dim_ff=HIDDEN_DIM,
+    dropout=DROPOUT,
+    pad_idx=pad_idx
+).to(DEVICE)
 
 # Count parameters
 param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 print("\n=== Transformer Configuration ===")
-print(f"Embedding dim: {EMB_SIZE}")
-print(f"Hidden dim: {HIDDEN_DIM}")
-print(f"Encoder layers: {NUM_ENCODER_LAYERS}")
-print(f"Decoder layers: {NUM_DECODER_LAYERS}")
-print(f"Attention heads: {NHEAD}")
-print(f"Dropout: {DROPOUT}")
-print(f"Batch size: {BATCH_SIZE}")
-print(f"Learning rate: {LR}")
-print(f"Parameters: {param_count:,}\n")
+print_model_info(model, {
+    "embedding_dim": EMB_SIZE,
+    "hidden_dim": HIDDEN_DIM,
+    "num_layers": NUM_ENCODER_LAYERS,
+    "dropout": DROPOUT,
+    "batch_size": BATCH_SIZE,
+    "lr": LR,
+    "parameters": param_count
+})
 
 # === Optimizer + Scheduler ===
 optimizer = optim.AdamW(model.parameters(), lr=LR, betas=(0.9, 0.98), eps=1e-9)
@@ -65,23 +80,23 @@ def lr_lambda(step):
 scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 # === Loss ===
-loss_fn = nn.CrossEntropyLoss(ignore_index=0)
+loss_fn = nn.CrossEntropyLoss(ignore_index=pad_idx)
 
 # === Training Loop ===
 for epoch in range(1, EPOCHS + 1):
     model.train()
     total_loss = 0
-    for src, tgt_in, tgt_out in train_loader:
-        src, tgt_in, tgt_out = src.to(device), tgt_in.to(device), tgt_out.to(device)
+    for batch in train_loader:
+        src = batch["input_ids"].to(DEVICE)
+        tgt = batch["target_ids"].to(DEVICE)
 
         optimizer.zero_grad()
-        # Forward pass
-        output = model(src, tgt_in)
+        output = model(src, tgt)
 
-        loss = loss_fn(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
+        loss = loss_fn(output[:, 1:, :].reshape(-1, output.size(-1)), tgt[:, 1:].reshape(-1))
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # avoid exploding gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         scheduler.step()
 
@@ -91,16 +106,10 @@ for epoch in range(1, EPOCHS + 1):
 
     # === Validation ===
     model.eval()
-    val_loss = 0
-    with torch.no_grad():
-        for src, tgt_in, tgt_out in val_loader:
-            src, tgt_in, tgt_out = src.to(device), tgt_in.to(device), tgt_out.to(device)
-            output = model(src, tgt_in)
-            loss = loss_fn(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
-            val_loss += loss.item()
-    val_loss /= len(val_loader)
+    val_loss, val_ppl, val_acc, *_ = evaluate(model, val_loader, None, DEVICE)
 
     print(f"[Epoch {epoch:02d}] "
           f"Train Loss: {avg_loss:.4f} | "
           f"Val Loss: {val_loss:.4f} | "
-          f"PPL: {math.exp(val_loss):.2f}")
+          f"PPL: {val_ppl:.2f} | "
+          f"Acc: {val_acc*100:.2f}%")
