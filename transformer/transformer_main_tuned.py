@@ -1,10 +1,12 @@
-import sys, os, math, torch, csv
+import sys, os, math, torch, csv, time
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split
 
-from dataset import SPRecipeDataset, sp_collate_fn
+import pandas as pd
+import sentencepiece as spm
+
 from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
 from logger import print_model_info
 
@@ -31,16 +33,42 @@ EPOCHS = 15
 WARMUP_STEPS = 4000
 
 
+# ----------------- Dataset -----------------
+class SPRecipeDataset(Dataset):
+    def __init__(self, csv_path, sp_model_path):
+        self.df = pd.read_csv(csv_path)
+        self.sp = spm.SentencePieceProcessor(model_file=sp_model_path)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        src = self.df.iloc[idx]["input"]
+        tgt = self.df.iloc[idx]["target"]
+
+        src_ids = [self.sp.piece_to_id("<s>")] + self.sp.encode(src, out_type=int) + [self.sp.piece_to_id("</s>")]
+        tgt_ids = [self.sp.piece_to_id("<s>")] + self.sp.encode(tgt, out_type=int) + [self.sp.piece_to_id("</s>")]
+
+        return torch.tensor(src_ids), torch.tensor(tgt_ids)
+
+
+def sp_collate_fn(batch):
+    srcs, tgts = zip(*batch)
+    src_pad_idx = sp.piece_to_id("<pad>")
+    tgt_pad_idx = sp.piece_to_id("<pad>")
+    srcs_padded = nn.utils.rnn.pad_sequence(srcs, batch_first=True, padding_value=src_pad_idx)
+    tgts_padded = nn.utils.rnn.pad_sequence(tgts, batch_first=True, padding_value=tgt_pad_idx)
+    return {"input_ids": srcs_padded, "target_ids": tgts_padded}
+
+
 # ----------------- Metrics -----------------
 def token_accuracy(preds, targets, pad_idx):
-    """Compute token-level accuracy (ignoring PAD)."""
     non_pad = targets != pad_idx
     correct = (preds == targets) & non_pad
     return correct.sum().item() / non_pad.sum().item()
 
 
 def jaccard_and_em(preds, targets, pad_idx):
-    """Compute Jaccard + Exact Match (EM) for batch."""
     batch_size = preds.size(0)
     jaccards, ems = [], []
     for i in range(batch_size):
@@ -60,7 +88,6 @@ def jaccard_and_em(preds, targets, pad_idx):
 
 
 def decode(token_ids, sp, pad_idx):
-    """Decode list of token ids into text using sentencepiece."""
     ids = [i for i in token_ids if i != pad_idx]
     return sp.decode_ids(ids)
 
@@ -74,9 +101,15 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion,
     with open(log_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["epoch", "train_loss", "val_loss", "ppl",
-                         "acc", "jaccard", "em"])
+                         "acc", "jaccard", "em",
+                         "time_sec", "gpu_mem_MB"])
 
+    total_runtime = 0.0
     for epoch in range(1, num_epochs + 1):
+        start_time = time.time()
+        if DEVICE.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
+
         model.train()
         total_loss, total_acc = 0.0, 0.0
 
@@ -132,14 +165,18 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion,
         val_acc /= len(val_loader)
         avg_jac = sum(jac_list) / len(jac_list)
         avg_em = sum(em_list) / len(em_list)
-
         ppl = math.exp(val_loss)
+
+        epoch_time = time.time() - start_time
+        total_runtime += epoch_time
+        gpu_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) if DEVICE.type == "cuda" else 0
 
         # print
         print(f"[Epoch {epoch:02d}] Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | "
               f"PPL: {ppl:.2f} | "
               f"Acc: {val_acc*100:.2f}% | "
-              f"Jaccard: {avg_jac*100:.2f}% | EM: {avg_em*100:.2f}%")
+              f"Jaccard: {avg_jac*100:.2f}% | EM: {avg_em*100:.2f}% | "
+              f"Time: {epoch_time:.1f}s | GPU: {gpu_mem:.1f}MB")
 
         for i, (pred, gold) in enumerate(sample_outputs, 1):
             print(f"  Example {i}:")
@@ -150,12 +187,14 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion,
         with open(log_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([epoch, avg_loss, val_loss, ppl,
-                             val_acc, avg_jac, avg_em])
+                             val_acc, avg_jac, avg_em,
+                             epoch_time, gpu_mem])
+
+    print(f"\n=== Training complete. Total runtime: {total_runtime:.1f}s ===")
 
 
 # ----------------- Main -----------------
 if __name__ == "__main__":
-    import sentencepiece as spm
     sp = spm.SentencePieceProcessor(model_file=SP_MODEL)
 
     # dataset
