@@ -55,7 +55,7 @@ class SPRecipeDataset(Dataset):
         df = pd.read_csv(csv_path)
         self.data = []
         for _, row in df.iterrows():
-            src, tgt = encode_pair(row["title"], row["ingredients"], max_len)
+            src, tgt = encode_pair(row["input"], row["target"], max_len)
             self.data.append({"input_ids": src, "target_ids": tgt})
 
     def __len__(self):
