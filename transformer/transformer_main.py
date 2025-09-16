@@ -8,7 +8,9 @@ ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
 sys.path.insert(0, ROOT_DIR)
 
 from dataset import RecipeDataset, collate_fn
-from transformer.transformer_model import Seq2SeqTransformer
+# from transformer.transformer_model import Seq2SeqTransformer
+from transformer.transformer_model_tuned import Seq2SeqTransformerTuned as Seq2SeqTransformer
+
 from logger import log_results, evaluate, print_model_info, log_epoch, log_examples, compute_confusion_small, save_confusion_heatmap
 
 DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
