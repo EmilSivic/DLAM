@@ -25,10 +25,8 @@ from logger import (
 )
 
 # Pfade
-DATA_PATH = os.environ.get(
-    "DATA_PATH",
-    "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
-)
+DATA_PATH = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
+
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CKPT_DIR = os.path.join(ROOT_DIR, "checkpoints")
