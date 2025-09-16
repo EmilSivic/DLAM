@@ -118,17 +118,18 @@ if __name__ == "__main__":
     pad_idx = train_loader.dataset.dataset.target_vocab.word2idx["<PAD>"]
 
     model = Seq2SeqTransformerTuned(
+        src_vocab_size=len(SRC.vocab),
+        tgt_vocab_size=len(TGT.vocab),
+        d_model=256,  # statt emb_size=256
+        nhead=8,
         num_encoder_layers=3,
         num_decoder_layers=3,
-        emb_size=256,  # vorher d_model
-        nhead=4,
-        src_vocab_size=len(train_loader.dataset.dataset.input_vocab),
-        tgt_vocab_size=len(train_loader.dataset.dataset.target_vocab),
-        dim_feedforward=1024,  # vorher dim_ff
-        dropout=0.2,
-        tie_weights=True,  # kannst auch False probieren
-        pad_idx=pad_idx
-    ).to(DEVICE)
+        dim_feedforward=512,
+        dropout=0.1,
+        src_pad_idx=SRC.vocab.stoi[SRC.pad_token],
+        tgt_pad_idx=TGT.vocab.stoi[TGT.pad_token],
+        tie_weights=False
+    )
 
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.2)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9, weight_decay=1e-5)
