@@ -1,21 +1,17 @@
-import sys, os
+import sys, os, math, torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader, random_split
 
-# Add project root to sys.path
+# Project imports
 FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
 sys.path.insert(0, ROOT_DIR)
 
-import math, torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.optim.lr_scheduler import LambdaLR
-
+from dataset import RecipeDataset, collate_fn
 from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
-from logger import evaluate, print_model_info
-from torch.utils.data import DataLoader, random_split, Dataset
-
-import pandas as pd
-import sentencepiece as spm
+from logger import print_model_info
 
 # reproducibility
 SEED = 42
@@ -24,55 +20,7 @@ torch.cuda.manual_seed_all(SEED)
 
 # paths
 DATA_PATH = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
-SP_MODEL = "/content/drive/MyDrive/DLAM_Project/data/spm_recipes.model"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# === Train SentencePiece if not yet trained ===
-if not os.path.exists(SP_MODEL):
-    spm.SentencePieceTrainer.Train(
-        input=DATA_PATH,
-        model_prefix="/content/drive/MyDrive/DLAM_Project/data/spm_recipes",
-        vocab_size=8000,
-        model_type="bpe",
-        character_coverage=1.0
-    )
-
-sp = spm.SentencePieceProcessor()
-sp.load(SP_MODEL)
-
-
-def encode_pair(src_text, tgt_text, max_len=64):
-    src_ids = sp.encode(src_text, out_type=int)[:max_len]
-    tgt_ids = sp.encode(tgt_text, out_type=int)[:max_len]
-    return (
-        [sp.bos_id()] + src_ids + [sp.eos_id()],
-        [sp.bos_id()] + tgt_ids + [sp.eos_id()]
-    )
-
-
-class SPRecipeDataset(Dataset):
-    def __init__(self, csv_path, max_len=64):
-        df = pd.read_csv(csv_path)
-        self.data = []
-        for _, row in df.iterrows():
-            src, tgt = encode_pair(row["input"], row["target"], max_len)
-            self.data.append({"input_ids": src, "target_ids": tgt})
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-def collate_fn_sp(batch):
-    from torch.nn.utils.rnn import pad_sequence
-    input_ids = [torch.tensor(x["input_ids"]) for x in batch]
-    target_ids = [torch.tensor(x["target_ids"]) for x in batch]
-    input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
-    target_ids = pad_sequence(target_ids, batch_first=True, padding_value=0)
-    return {"input_ids": input_ids, "target_ids": target_ids}
-
 
 # hyperparameters
 EMB_SIZE = 512
@@ -81,62 +29,98 @@ NUM_ENCODER_LAYERS = 6
 NUM_DECODER_LAYERS = 6
 NHEAD = 8
 DROPOUT = 0.2
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 LR = 3e-4
 EPOCHS = 15
 WARMUP_STEPS = 4000
 
 
+# ---- Jaccard + Exact Match ----
+def jaccard_and_em(preds, targets, pad_idx):
+    """
+    preds, targets: LongTensor [batch, seq_len]
+    """
+    jac_scores, em_scores = [], []
+    for p, t in zip(preds.tolist(), targets.tolist()):
+        # remove padding + convert to sets
+        p = [tok for tok in p if tok != pad_idx]
+        t = [tok for tok in t if tok != pad_idx]
+
+        p_set, t_set = set(p), set(t)
+
+        # Jaccard
+        inter = len(p_set & t_set)
+        union = len(p_set | t_set) if len(p_set | t_set) > 0 else 1
+        jac_scores.append(inter / union)
+
+        # Exact Match
+        em_scores.append(1.0 if p == t else 0.0)
+
+    return sum(jac_scores) / len(jac_scores), sum(em_scores) / len(em_scores)
+
+
+# ---- Training Loop ----
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, num_epochs, pad_idx):
     for epoch in range(1, num_epochs + 1):
         model.train()
         total_loss = 0.0
 
-        for batch in train_loader:
-            src = batch["input_ids"].to(DEVICE)
-            tgt = batch["target_ids"].to(DEVICE)
+        for src, tgt_in, tgt_out in train_loader:
+            src, tgt_in, tgt_out = src.to(DEVICE), tgt_in.to(DEVICE), tgt_out.to(DEVICE)
 
             optimizer.zero_grad()
-            # teacher forcing: input all but last, predict all but first
-            output = model(src, tgt[:, :-1])
+            output = model(src, tgt_in)
 
-            loss = criterion(
-                output.reshape(-1, output.shape[-1]),
-                tgt[:, 1:].reshape(-1)
-            )
+            loss = criterion(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
             loss.backward()
 
-            # gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             optimizer.step()
             scheduler.step()
-
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
 
-        # validation
+        # ---- Validation ----
         model.eval()
-        val_loss, val_ppl, val_acc, *_ = evaluate(model, val_loader, None, DEVICE)
+        val_loss, jac_list, em_list = 0.0, [], []
 
-        print(f"[Epoch {epoch:02d}] Train Loss: {avg_loss:.4f} "
-              f"| Val Loss: {val_loss:.4f} | PPL: {val_ppl:.2f} | Acc: {val_acc*100:.2f}%")
+        with torch.no_grad():
+            for src, tgt_in, tgt_out in val_loader:
+                src, tgt_in, tgt_out = src.to(DEVICE), tgt_in.to(DEVICE), tgt_out.to(DEVICE)
+                output = model(src, tgt_in)
+
+                loss = criterion(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
+                val_loss += loss.item()
+
+                # greedy decode: pick highest prob token
+                pred_tokens = output.argmax(-1)
+                jac, em = jaccard_and_em(pred_tokens, tgt_out, pad_idx)
+                jac_list.append(jac)
+                em_list.append(em)
+
+        val_loss /= len(val_loader)
+        avg_jac = sum(jac_list) / len(jac_list)
+        avg_em = sum(em_list) / len(em_list)
+
+        print(f"[Epoch {epoch:02d}] Train Loss: {avg_loss:.4f} | "
+              f"Val Loss: {val_loss:.4f} | "
+              f"PPL: {math.exp(val_loss):.2f} | "
+              f"Jaccard: {avg_jac*100:.2f}% | "
+              f"EM: {avg_em*100:.2f}%")
 
 
 if __name__ == "__main__":
     # data
-    dataset = SPRecipeDataset(DATA_PATH)
+    dataset = RecipeDataset(DATA_PATH)
     n_val = int(len(dataset) * 0.2)
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val])
 
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn_sp)
-    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn_sp)
-
-    src_vocab_size = sp.get_piece_size()
-    tgt_vocab_size = sp.get_piece_size()
-    pad_idx = 0  # SentencePiece reserves ID=0 for <pad>
+    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+    pad_idx = train_loader.dataset.dataset.target_vocab.word2idx["<PAD>"]
 
     # model
     model = Seq2SeqTransformerTuned(
@@ -144,8 +128,8 @@ if __name__ == "__main__":
         num_decoder_layers=NUM_DECODER_LAYERS,
         emb_size=EMB_SIZE,
         nhead=NHEAD,
-        src_vocab_size=src_vocab_size,
-        tgt_vocab_size=tgt_vocab_size,
+        src_vocab_size=len(train_loader.dataset.dataset.input_vocab),
+        tgt_vocab_size=len(train_loader.dataset.dataset.target_vocab),
         dim_feedforward=HIDDEN_DIM,
         dropout=DROPOUT,
         pad_idx=pad_idx
@@ -172,8 +156,7 @@ if __name__ == "__main__":
         "dropout": DROPOUT,
         "batch_size": BATCH_SIZE,
         "lr": LR,
-        "weight_decay": optimizer.param_groups[0].get("weight_decay", 0.0),
-        "vocab_size": src_vocab_size
+        "weight_decay": optimizer.param_groups[0].get("weight_decay", 0.0)
     })
 
     # train
