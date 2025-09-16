@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch.nn import Transformer
 
 
 class Seq2SeqTransformerTuned(nn.Module):
@@ -14,7 +13,8 @@ class Seq2SeqTransformerTuned(nn.Module):
         num_decoder_layers=3,
         dim_ff=1024,
         dropout=0.1,
-        pad_idx=0
+        pad_idx=0,
+        tie_weights=False   # <--- hinzugefügt
     ):
         super().__init__()
         self.embedding_dim = d_model
@@ -25,9 +25,6 @@ class Seq2SeqTransformerTuned(nn.Module):
         # Embeddings
         self.src_emb = nn.Embedding(src_vocab_size, d_model, padding_idx=pad_idx)
         self.tgt_emb = nn.Embedding(tgt_vocab_size, d_model, padding_idx=pad_idx)
-
-        # Positional Encoding
-        self.pos_enc = nn.Embedding(5000, d_model)  # falls nötig, sonst rausnehmen
 
         # Encoder & Decoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -49,12 +46,19 @@ class Seq2SeqTransformerTuned(nn.Module):
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
 
         # Output Layer
-        self.fc_out = nn.Linear(d_model, tgt_vocab_size)
+        self.fc_out = nn.Linear(d_model, tgt_vocab_size, bias=False)
+
+        # Gewichtssharing
+        if tie_weights:
+            if src_vocab_size == tgt_vocab_size:
+                self.fc_out.weight = self.tgt_emb.weight
+            else:
+                raise ValueError("tie_weights=True nur möglich, wenn src_vocab_size == tgt_vocab_size")
 
         self.pad_idx = pad_idx
 
     def forward(self, src, tgt, src_lengths=None, teacher_forcing_ratio=None):
-        # teacher_forcing_ratio wird hier ignoriert (nur für Kompatibilität mit logger.py)
+        # teacher_forcing_ratio ignoriert, nur für Kompatibilität
         src_emb = self.src_emb(src)
         tgt_emb = self.tgt_emb(tgt)
 
@@ -67,4 +71,3 @@ class Seq2SeqTransformerTuned(nn.Module):
         # Projection to vocab
         logits = self.fc_out(out)
         return logits
-
