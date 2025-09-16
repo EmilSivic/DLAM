@@ -1,139 +1,96 @@
-import sys, os, time, torch, random
-import numpy as np
+import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
-import matplotlib.pyplot as plt
+import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
+from transformer_model import Seq2SeqTransformer
+from dataset import get_dataloaders
+import math
 
-# Seed Fix
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+# === Hyperparameters ===
+EMB_SIZE = 512
+HIDDEN_DIM = 2048
+NUM_ENCODER_LAYERS = 6
+NUM_DECODER_LAYERS = 6
+NHEAD = 8
+DROPOUT = 0.2
+LR = 5e-4
+BATCH_SIZE = 128
+EPOCHS = 15
 
-# Pfade
-FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
-sys.path.insert(0, ROOT_DIR)
+# === Data ===
+train_loader, val_loader, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE = get_dataloaders(batch_size=BATCH_SIZE)
 
-from dataset import RecipeDataset, collate_fn
-from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
-from logger import (
-    log_results, evaluate, print_model_info, log_epoch
-)
+# === Model ===
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = Seq2SeqTransformer(
+    num_encoder_layers=NUM_ENCODER_LAYERS,
+    num_decoder_layers=NUM_DECODER_LAYERS,
+    emb_size=EMB_SIZE,
+    nhead=NHEAD,
+    src_vocab_size=SRC_VOCAB_SIZE,
+    tgt_vocab_size=TGT_VOCAB_SIZE,
+    dim_feedforward=HIDDEN_DIM,
+    dropout=DROPOUT
+).to(device)
 
-# Pfade
-DATA_PATH = os.environ.get(
-    "DATA_PATH",
-    "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
-)
+# Count parameters
+param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+print("\n=== Transformer Configuration ===")
+print(f"Embedding dim: {EMB_SIZE}")
+print(f"Hidden dim: {HIDDEN_DIM}")
+print(f"Encoder layers: {NUM_ENCODER_LAYERS}")
+print(f"Decoder layers: {NUM_DECODER_LAYERS}")
+print(f"Attention heads: {NHEAD}")
+print(f"Dropout: {DROPOUT}")
+print(f"Batch size: {BATCH_SIZE}")
+print(f"Learning rate: {LR}")
+print(f"Parameters: {param_count:,}\n")
 
+# === Optimizer + Scheduler ===
+optimizer = optim.AdamW(model.parameters(), lr=LR, betas=(0.9, 0.98), eps=1e-9)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CKPT_DIR = os.path.join(ROOT_DIR, "checkpoints")
-RESULTS_DIR = "/content/drive/MyDrive/DLAM_Project/results"
-os.makedirs(CKPT_DIR, exist_ok=True)
+# Scheduler with warmup (like in "Attention is All You Need")
+def lr_lambda(step):
+    warmup_steps = 4000
+    if step == 0:
+        step = 1
+    return (EMB_SIZE ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
 
-# Scheduler
-class NoamScheduler(torch.optim.lr_scheduler._LRScheduler):
-    def __init__(self, optimizer, d_model, warmup_steps=4000, last_epoch=-1):
-        self.d_model = d_model
-        self.warmup_steps = warmup_steps
-        super().__init__(optimizer, last_epoch)
+scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-    def get_lr(self):
-        step = max(1, self._step_count)
-        scale = (self.d_model ** -0.5) * min(
-            step ** -0.5, step * (self.warmup_steps ** -1.5)
-        )
-        return [scale for _ in self.base_lrs]
+# === Loss ===
+loss_fn = nn.CrossEntropyLoss(ignore_index=0)
 
-# Training
-def train(model, train_loader, val_loader,
-          optimizer, criterion, num_epochs, pad_idx,
-          scheduler=None, patience=5):
-    best_val_loss = float("inf")
-    best_epoch = 0
-    no_improve = 0
+# === Training Loop ===
+for epoch in range(1, EPOCHS + 1):
+    model.train()
+    total_loss = 0
+    for src, tgt_in, tgt_out in train_loader:
+        src, tgt_in, tgt_out = src.to(device), tgt_in.to(device), tgt_out.to(device)
 
-    train_losses, val_losses = [], []
+        optimizer.zero_grad()
+        output = model(src, tgt_in, None, None, None, None, None)
 
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        total_loss = 0.0
-        for batch in train_loader:
-            src, tgt = batch["input_ids"].to(DEVICE), batch["target_ids"].to(DEVICE)
-            optimizer.zero_grad()
-            logits = model(src, tgt[:, :-1])
-            loss = criterion(
-                logits.reshape(-1, logits.size(-1)),
-                tgt[:, 1:].reshape(-1)
-            )
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            if scheduler: scheduler.step()
-            total_loss += loss.item()
+        loss = loss_fn(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
+        loss.backward()
 
-        train_loss = total_loss / len(train_loader)
-        val_loss, val_ppl, val_acc, val_bleu, val_em, val_jacc = evaluate(model, val_loader, None, DEVICE)
+        optimizer.step()
+        scheduler.step()
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+        total_loss += loss.item()
 
-        print(f"Epoch {epoch} | train {train_loss:.4f} | val {val_loss:.4f} "
-              f"(ppl {val_ppl:.2f}) | acc {val_acc*100:.1f}%")
+    avg_loss = total_loss / len(train_loader)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_epoch = epoch
-            no_improve = 0
-            torch.save(model.state_dict(), os.path.join(CKPT_DIR, f"best_model_epoch{epoch}.pt"))
-        else:
-            no_improve += 1
-            if no_improve >= patience:
-                print("Early stopping triggered.")
-                break
+    # === Validation ===
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for src, tgt_in, tgt_out in val_loader:
+            src, tgt_in, tgt_out = src.to(device), tgt_in.to(device), tgt_out.to(device)
+            output = model(src, tgt_in, None, None, None, None, None)
+            loss = loss_fn(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
+            val_loss += loss.item()
+    val_loss /= len(val_loader)
 
-    # Plot Loss
-    plt.plot(train_losses, label="Train")
-    plt.plot(val_losses, label="Val")
-    plt.legend()
-    plt.savefig(os.path.join(RESULTS_DIR, "loss_curve.png"))
-    plt.close()
-
-
-if __name__ == "__main__":
-    dataset = RecipeDataset(DATA_PATH)
-    n_val = int(len(dataset) * 0.2)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val])
-
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_set, batch_size=64, shuffle=False, collate_fn=collate_fn)
-
-    pad_idx = train_loader.dataset.dataset.target_vocab.word2idx["<PAD>"]
-
-    model = Seq2SeqTransformerTuned(
-        src_vocab_size=len(SRC.vocab),
-        tgt_vocab_size=len(TGT.vocab),
-        d_model=256,  # statt emb_size=256
-        nhead=8,
-        num_encoder_layers=3,
-        num_decoder_layers=3,
-        dim_feedforward=512,
-        dropout=0.1,
-        src_pad_idx=SRC.vocab.stoi[SRC.pad_token],
-        tgt_pad_idx=TGT.vocab.stoi[TGT.pad_token],
-        tie_weights=False
-    )
-
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.2)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9, weight_decay=1e-5)
-    # Scheduler anpassen
-    scheduler = NoamScheduler(optimizer, d_model=model.d_model, warmup_steps=4000)
-
-    train(model, train_loader, val_loader, optimizer, criterion, 40, pad_idx, scheduler=scheduler, patience=7)
+    print(f"[Epoch {epoch:02d}] Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | PPL: {math.exp(val_loss):.2f}")
