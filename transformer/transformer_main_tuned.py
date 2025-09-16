@@ -44,16 +44,17 @@ pad_idx = train_loader.dataset.dataset.target_vocab.word2idx["<PAD>"]
 
 # === Model ===
 model = Seq2SeqTransformerTuned(
-    src_vocab_size=len(train_loader.dataset.dataset.input_vocab),
-    tgt_vocab_size=len(train_loader.dataset.dataset.target_vocab),
-    d_model=EMB_SIZE,
-    nhead=NHEAD,
     num_encoder_layers=NUM_ENCODER_LAYERS,
     num_decoder_layers=NUM_DECODER_LAYERS,
-    dim_ff=HIDDEN_DIM,
+    emb_size=EMB_SIZE,
+    nhead=NHEAD,
+    src_vocab_size=len(train_loader.dataset.dataset.input_vocab),
+    tgt_vocab_size=len(train_loader.dataset.dataset.target_vocab),
+    dim_feedforward=HIDDEN_DIM,
     dropout=DROPOUT,
     pad_idx=pad_idx
 ).to(DEVICE)
+
 
 # Count parameters
 param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
