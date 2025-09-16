@@ -54,12 +54,11 @@ class Seq2SeqTransformer(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
         return mask
 
-    def forward(self, src, tgt):
+    def forward(self, src, tgt, *args, **kwargs):
         device = src.device
         src_emb = self.positional_encoding(self.src_tok_emb(src))
         tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt))
 
-        # Decoder mask
         tgt_seq_len = tgt.size(1)
         tgt_mask = self._generate_square_subsequent_mask(tgt_seq_len, device)
 
