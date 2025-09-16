@@ -1,73 +1,96 @@
 import torch
 import torch.nn as nn
+import math
 
 
 class Seq2SeqTransformerTuned(nn.Module):
     def __init__(
         self,
+        num_encoder_layers,
+        num_decoder_layers,
+        emb_size,
+        nhead,
         src_vocab_size,
         tgt_vocab_size,
-        d_model=256,
-        nhead=4,
-        num_encoder_layers=3,
-        num_decoder_layers=3,
-        dim_ff=1024,
+        dim_feedforward=512,
         dropout=0.1,
+        tie_weights=False,
         pad_idx=0,
-        tie_weights=False   # <--- hinzugefügt
     ):
         super().__init__()
-        self.embedding_dim = d_model
-        self.hidden_dim = d_model
-        self.num_layers = num_encoder_layers
-        self.dropout = dropout
 
-        # Embeddings
-        self.src_emb = nn.Embedding(src_vocab_size, d_model, padding_idx=pad_idx)
-        self.tgt_emb = nn.Embedding(tgt_vocab_size, d_model, padding_idx=pad_idx)
+        self.src_emb = nn.Embedding(src_vocab_size, emb_size, padding_idx=pad_idx)
+        self.tgt_emb = nn.Embedding(tgt_vocab_size, emb_size, padding_idx=pad_idx)
 
-        # Encoder & Decoder
+        self.pos_encoder = PositionalEncoding(emb_size, dropout)
+        self.pos_decoder = PositionalEncoding(emb_size, dropout)
+
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
+            d_model=emb_size,
             nhead=nhead,
-            dim_feedforward=dim_ff,
+            dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
-
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
+            d_model=emb_size,
             nhead=nhead,
-            dim_feedforward=dim_ff,
+            dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
         )
+
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
 
-        # Output Layer
-        self.fc_out = nn.Linear(d_model, tgt_vocab_size, bias=False)
+        self.fc_out = nn.Linear(emb_size, tgt_vocab_size, bias=False)
 
-        # Gewichtssharing
+        # ---- Nur Decoder-Embeddings ↔ Output teilen ----
         if tie_weights:
-            if src_vocab_size == tgt_vocab_size:
-                self.fc_out.weight = self.tgt_emb.weight
-            else:
-                raise ValueError("tie_weights=True nur möglich, wenn src_vocab_size == tgt_vocab_size")
+            self.fc_out.weight = self.tgt_emb.weight
 
-        self.pad_idx = pad_idx
+        self._reset_parameters()
 
-    def forward(self, src, tgt, src_lengths=None, teacher_forcing_ratio=None):
-        # teacher_forcing_ratio ignoriert, nur für Kompatibilität
-        src_emb = self.src_emb(src)
-        tgt_emb = self.tgt_emb(tgt)
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
-        # Encoder
-        memory = self.encoder(src_emb)
+    def encode(self, src, src_mask=None, src_key_padding_mask=None):
+        src = self.pos_encoder(self.src_emb(src))
+        return self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
 
-        # Decoder
-        out = self.decoder(tgt_emb, memory)
+    def decode(self, tgt, memory, tgt_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None):
+        tgt = self.pos_decoder(self.tgt_emb(tgt))
+        return self.decoder(
+            tgt,
+            memory,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+            memory_key_padding_mask=memory_key_padding_mask,
+        )
 
-        # Projection to vocab
-        logits = self.fc_out(out)
-        return logits
+    def forward(self, src, tgt, src_mask=None, tgt_mask=None,
+                src_key_padding_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None,
+                teacher_forcing_ratio=None):  # kompatibel mit logger
+        memory = self.encode(src, src_mask, src_key_padding_mask)
+        outs = self.decode(tgt, memory, tgt_mask, tgt_key_padding_mask, memory_key_padding_mask)
+        return self.fc_out(outs)
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, : x.size(1)]
+        return self.dropout(x)
