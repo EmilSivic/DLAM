@@ -1,11 +1,11 @@
 import sys, os
 
-# Add project root to sys.path 
+# Add project root to sys.path
 FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
 sys.path.insert(0, ROOT_DIR)
 
-import sys, os, math, torch
+import math, torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
@@ -42,13 +42,19 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, num_
         model.train()
         total_loss = 0.0
 
-        for src, tgt_in, tgt_out in train_loader:
-            src, tgt_in, tgt_out = src.to(DEVICE), tgt_in.to(DEVICE), tgt_out.to(DEVICE)
+        for batch in train_loader:
+            src = batch["input_ids"].to(DEVICE)
+            tgt = batch["target_ids"].to(DEVICE)
 
             optimizer.zero_grad()
-            output = model(src, tgt_in)
+            # input: all tokens except last
+            output = model(src, tgt[:, :-1])
 
-            loss = criterion(output.reshape(-1, output.shape[-1]), tgt_out.reshape(-1))
+            # target: all tokens except first
+            loss = criterion(
+                output.reshape(-1, output.shape[-1]),
+                tgt[:, 1:].reshape(-1)
+            )
             loss.backward()
 
             # gradient clipping
@@ -94,7 +100,7 @@ if __name__ == "__main__":
     ).to(DEVICE)
 
     # optimizer + scheduler
-    optimizer = optim.AdamW(model.parameters(), lr=LR, betas=(0.9, 0.98), eps=1e-9)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, betas=(0.9, 0.98), eps=1e-9, weight_decay=1e-2)
 
     def lr_lambda(step):
         step = max(1, step)
