@@ -120,10 +120,19 @@ if __name__=="__main__":
     d_model = model.embedding_dim
     warmup_steps = 4000
 
-    def lr_lambda(step):
-        step = max(1, step)
-        return (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    class NoamScheduler(torch.optim.lr_scheduler._LRScheduler):
+        def __init__(self, optimizer, d_model, warmup_steps=4000, last_epoch=-1):
+            self.d_model = d_model
+            self.warmup_steps = warmup_steps
+            super().__init__(optimizer, last_epoch)
+
+        def get_lr(self):
+            step = max(1, self._step_count)
+            scale = (self.d_model ** -0.5) * min(step ** -0.5, step * (self.warmup_steps ** -1.5))
+            return [scale for _ in self.base_lrs]
+
+
+    scheduler = NoamScheduler(optimizer, d_model=d_model, warmup_steps=warmup_steps)
 
     train(model, train_loader, val_loader, optimizer, criterion, 15, pad_idx, scheduler)
