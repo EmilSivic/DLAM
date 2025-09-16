@@ -3,12 +3,17 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import Dataset, DataLoader, random_split
-
 import pandas as pd
 import sentencepiece as spm
 
+# --- Fix path so that "import transformer" works ---
+FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
+sys.path.insert(0, ROOT_DIR)
+
 from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
 from logger import print_model_info
+
 
 # reproducibility
 SEED = 42
