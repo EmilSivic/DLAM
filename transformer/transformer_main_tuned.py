@@ -13,7 +13,7 @@ torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-# paths
+# config
 FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(FILE_DIR, ".."))
 sys.path.insert(0, ROOT_DIR)
@@ -21,7 +21,8 @@ sys.path.insert(0, ROOT_DIR)
 from dataset import RecipeDataset, collate_fn
 from transformer.transformer_model_tuned import Seq2SeqTransformerTuned
 from logger import (
-    log_results, evaluate, print_model_info, log_epoch
+    log_results, evaluate, print_model_info, log_epoch,
+    log_examples, compute_confusion_small, save_confusion_heatmap
 )
 
 DATA_PATH = os.environ.get("DATA_PATH", "data/processed_recipes.csv")
@@ -30,13 +31,31 @@ CKPT_DIR = os.path.join(ROOT_DIR, "checkpoints")
 RESULTS_DIR = "/content/drive/MyDrive/DLAM_Project/results"
 os.makedirs(CKPT_DIR, exist_ok=True)
 
+# model name
 def get_model_name_tuned(m):
-    return f"TRANS_TUNED_DEBUG_d{m.embedding_dim}_layers{m.num_layers}_drop{m.dropout:.1f}"
+    return f"TRANS_TUNED_d{m.embedding_dim}_layers{m.num_layers}_drop{m.dropout:.1f}"
+
+# noam scheduler
+class NoamScheduler(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, d_model, warmup_steps=4000, factor=2.0, last_epoch=-1):
+        self.d_model = d_model
+        self.warmup_steps = warmup_steps
+        self.factor = factor
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        step = max(1, self._step_count)
+        scale = self.factor * (self.d_model ** -0.5) * min(
+            step ** -0.5,
+            step * (self.warmup_steps ** -1.5)
+        )
+        return [scale for _ in self.base_lrs]
 
 # training
-def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad_idx):
+def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad_idx, scheduler=None):
     best_val_loss = float("inf")
     best_val_ppl = float("inf")
+    best_val_acc = best_val_bleu = best_val_em = best_val_jacc = 0.0
     best_epoch = None
     train_losses, val_losses = [], []
     start = time.time()
@@ -56,6 +75,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
     print_model_info(model, params)
 
     for epoch in range(1, num_epochs + 1):
+        epoch_start = time.time()
         model.train()
         total = 0.0
         for batch in train_loader:
@@ -69,32 +89,41 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            if scheduler:
+                scheduler.step()
             total += loss.item()
 
         train_loss = total / len(train_loader)
         val_loss, val_ppl, val_acc, val_bleu, val_em, val_jacc = evaluate(model, val_loader, None, DEVICE)
 
+        # current lr
+        current_lr = optimizer.param_groups[0]["lr"]
+
         if val_loss < best_val_loss:
             best_val_loss, best_val_ppl = val_loss, val_ppl
+            best_val_acc, best_val_bleu, best_val_em, best_val_jacc = val_acc, val_bleu, val_em, val_jacc
             best_epoch = epoch
             torch.save(model.state_dict(),
-                       os.path.join(CKPT_DIR, f"transformer_tuned_debug_epoch{epoch}_ppl{val_ppl:.2f}.pt"))
+                       os.path.join(CKPT_DIR, f"transformer_tuned_epoch{epoch}_ppl{val_ppl:.2f}.pt"))
 
-        print(f"Epoch {epoch} | "
+        print(f"Epoch {epoch} | LR {current_lr:.6e} | "
               f"train {train_loss:.4f} | val {val_loss:.4f} "
               f"(ppl {val_ppl:.2f}) | acc {val_acc*100:.1f}% "
               f"| BLEU {val_bleu:.3f} | EM {val_em*100:.1f}% | Jacc {val_jacc*100:.1f}%")
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
+        epoch_time = time.time() - epoch_start
+        log_epoch(RESULTS_DIR, get_model_name_tuned(model), epoch,
+                  train_loss, val_loss, val_ppl, val_acc, val_bleu, val_em, val_jacc, epoch_time)
 
-    # loss curve
+    # save loss plot
     plt.plot(train_losses, label="Train")
     plt.plot(val_losses, label="Val")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend()
-    plt.savefig(os.path.join(RESULTS_DIR, "loss_transformer_tuned_debug.png"))
+    plt.savefig(os.path.join(RESULTS_DIR, "loss_transformer_tuned.png"))
     plt.close()
 
     train_time = time.time() - start
@@ -103,11 +132,12 @@ def train(model, train_loader, val_loader, optimizer, criterion, num_epochs, pad
     log_results(
         base_dir=RESULTS_DIR, model_name=get_model_name_tuned(model), params=params,
         best_epoch=best_epoch, best_val_loss=best_val_loss, best_val_ppl=best_val_ppl,
-        best_val_acc=val_acc, best_val_bleu=val_bleu, best_val_em=val_em,
-        best_val_jacc=val_jacc, gpu_mem=gpu_mem, train_time=train_time,
+        best_val_acc=best_val_acc, best_val_bleu=best_val_bleu, best_val_em=best_val_em,
+        best_val_jacc=best_val_jacc, gpu_mem=gpu_mem, train_time=train_time,
         train_loss=train_losses[-1]
     )
 
+# main
 if __name__ == "__main__":
     dataset = RecipeDataset(DATA_PATH)
     n_val = int(len(dataset) * 0.2)
@@ -130,10 +160,12 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=5e-4,  # fixer Wert, kein Scheduler
+        lr=1.0,  # wird vom NoamScheduler überschrieben
         betas=(0.9, 0.98),
         eps=1e-9,
         weight_decay=1e-5
     )
 
-    train(model, train_loader, val_loader, optimizer, criterion, 15, pad_idx)
+    scheduler = NoamScheduler(optimizer, d_model=model.embedding_dim, warmup_steps=4000, factor=2.0)
+
+    train(model, train_loader, val_loader, optimizer, criterion, 15, pad_idx, scheduler)
