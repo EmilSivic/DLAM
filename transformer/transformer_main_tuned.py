@@ -24,7 +24,7 @@ from transformer_model_tuned import Seq2SeqTransformerTuned  # same folder
 class Config:
     TRAIN_CSV: str = "train.csv"     # expects columns: input, target
     VAL_CSV: str = "val.csv"
-    SPM_MODEL: str = "spm.model"     # SentencePiece model path
+    SPM_MODEL: str = "/content/drive/MyDrive/DLAM_Project/data/spm_recipes.model"     # SentencePiece model path
 
     # Model
     EMB_SIZE: int = 512
