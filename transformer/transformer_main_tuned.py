@@ -488,6 +488,10 @@ def fit():
     val_ds = RecipeDatasetSP(val_df, sp)
     pad_id = train_ds.pad_id
 
+    n_steps = int(val_ds.df["input"].astype(str).str.startswith("<STEPS>").sum())
+    n_ingr  = int(val_ds.df["input"].astype(str).str.startswith("<INGR>").sum())
+    print(f"Val split rows -> INGREDIENTS: {n_ingr} | STEPS: {n_steps}")
+
     # Loaders
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True,
                               collate_fn=lambda b: collate_fn(b, pad_id))
