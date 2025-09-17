@@ -23,7 +23,7 @@ from transformer_model_tuned import Seq2SeqTransformerTuned  # same folder
 @dataclass
 class Config:
     TRAIN_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"     # expects columns: input, target
-    VAL_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv
+    VAL_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
     SPM_MODEL: str = "/content/drive/MyDrive/DLAM_Project/data/spm_recipes.model"     # SentencePiece model path
 
     # Model
