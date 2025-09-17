@@ -25,7 +25,7 @@ from transformer_model_tuned import Seq2SeqTransformerTuned  # same folder
 @dataclass
 class Config:
     # Single dataset to load and split
-    DATA_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"  # expects columns: input, target
+    DATA_CSV: str = "/content/drive/MyDrive/DLAM_Project/data_processed_new.csv/processed_recipes_multitask_ner.csv"  # expects columns: input, target
     SPM_MODEL: str = "/content/drive/MyDrive/DLAM_Project/data/spm_recipes.model"     # SentencePiece model path
 
     # Data split
