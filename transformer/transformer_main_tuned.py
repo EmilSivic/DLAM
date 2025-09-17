@@ -1,6 +1,8 @@
 import os
 import math
 import time
+import hashlib
+import random
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 from collections import Counter
@@ -49,8 +51,12 @@ class Config:
 
     # Generation/logging
     MAX_NEW_TOKENS: int = 128
-    LOG_EXAMPLES: int = 3
+    LOG_EXAMPLES: int = 3               # how many examples to print per epoch
     DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Epoch-level text-metric evaluation (generation-based)
+    METRIC_EVAL_SAMPLES: int = 256      # set to -1 to use ALL validation rows
+    METRIC_EVAL_SEED: int = 123         # which rows to sample (reproducible)
 
 
 cfg = Config()
@@ -63,7 +69,6 @@ class RecipeDatasetSP(Dataset):
     """Takes a pre-sliced DataFrame (train or val) and a SentencePiece processor."""
     def __init__(self, df: pd.DataFrame, sp: spm.SentencePieceProcessor):
         assert {"input", "target"}.issubset(df.columns), "CSV must have 'input' and 'target' columns"
-        # Keep only needed cols, drop NaNs just in case
         self.df = df[["input", "target"]].dropna().reset_index(drop=True)
         self.sp = sp
 
@@ -222,6 +227,7 @@ def bleu_from_texts(pred_text: str, gold_text: str, max_n: int = 4) -> float:
         precisions.append(p_n)
 
     # geometric mean of precisions
+    # avoid log(0) by only averaging positive p's (smoothing already prevents 0)
     gm = math.exp(sum(math.log(p) for p in precisions if p > 0) / max(1, len([p for p in precisions if p > 0])))
     # brevity penalty
     bp = 1.0 if len_h > len_r else math.exp(1.0 - (len_r / max(1, len_h)))
@@ -259,6 +265,14 @@ def rouge_l_f1_from_texts(pred_text: str, gold_text: str) -> float:
         return 0.0
     f1 = (2 * prec * rec) / (prec + rec)
     return 100.0 * f1
+
+
+def stable_anchor_indices(df: pd.DataFrame, k=3) -> List[int]:
+    """Pick k stable indices from df['input'] by hashing titles deterministically."""
+    titles = df["input"].astype(str).tolist()
+    keyed = [(int(hashlib.md5(t.encode("utf-8")).hexdigest(), 16), i) for i, t in enumerate(titles)]
+    keyed.sort()
+    return [i for _, i in keyed[:min(k, len(keyed))]]
 
 
 # -----------------------
@@ -403,6 +417,54 @@ def evaluate(model, loader, criterion, pad_id) -> Tuple[float, float]:
     return total_loss / max(1, n_batches), total_acc / max(1, n_batches)
 
 
+@torch.no_grad()
+def evaluate_text_metrics_epoch(model, sp, df: pd.DataFrame, device, max_new_tokens: int,
+                                sample_size: int, seed: int) -> dict:
+    """
+    Generate on a sampled subset (or all) of val rows and compute epoch-level averages
+    for Jaccard, Cosine, ROUGE-L(F1), BLEU-4, and EM.
+    """
+    n = len(df)
+    if n == 0:
+        return {"Jaccard": 0.0, "Cosine": 0.0, "ROUGE-L": 0.0, "BLEU-4": 0.0, "EM": 0.0}
+
+    if sample_size is None or sample_size < 0 or sample_size >= n:
+        indices = list(range(n))
+    else:
+        rng = random.Random(seed)
+        indices = rng.sample(range(n), k=min(sample_size, n))
+
+    sums = {"Jaccard": 0.0, "Cosine": 0.0, "ROUGE-L": 0.0, "BLEU-4": 0.0, "EM": 0.0}
+    count = 0
+
+    for i in indices:
+        title = df.iloc[i]["input"]
+        gold_text = df.iloc[i]["target"]
+        try:
+            pred_text = greedy_generate(model, sp, str(title), device, max_new_tokens=max_new_tokens)
+
+            jac  = jaccard_from_texts(pred_text, gold_text)
+            cos  = cosine_similarity_from_texts(pred_text, gold_text)
+            rl   = rouge_l_f1_from_texts(pred_text, gold_text)
+            bleu = bleu_from_texts(pred_text, gold_text, max_n=4)
+            em   = 100.0 if str(pred_text).strip() == str(gold_text).strip() else 0.0
+
+            sums["Jaccard"] += jac
+            sums["Cosine"]  += cos
+            sums["ROUGE-L"] += rl
+            sums["BLEU-4"]  += bleu
+            sums["EM"]      += em
+            count += 1
+        except Exception:
+            # skip bad rows silently, still average over successful ones
+            continue
+
+    if count == 0:
+        return {"Jaccard": 0.0, "Cosine": 0.0, "ROUGE-L": 0.0, "BLEU-4": 0.0, "EM": 0.0}
+
+    return {k: v / count for k, v in sums.items()}
+
+
 def fit():
     # Load SentencePiece
     if not os.path.exists(cfg.SPM_MODEL):
@@ -427,13 +489,18 @@ def fit():
     pad_id = train_ds.pad_id
 
     # Loaders
-    train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True, collate_fn=lambda b: collate_fn(b, pad_id))
-    val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False, collate_fn=lambda b: collate_fn(b, pad_id))
+    train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True,
+                              collate_fn=lambda b: collate_fn(b, pad_id))
+    val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False,
+                            collate_fn=lambda b: collate_fn(b, pad_id))
 
     # Model / Optim
     model, optimizer, scheduler, pad_id_m = build_model_and_optim(sp)
     assert pad_id_m == pad_id
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id, label_smoothing=cfg.LABEL_SMOOTHING)
+
+    # Choose fixed anchors for per-epoch example prints
+    anchor_idx = stable_anchor_indices(val_ds.df, k=cfg.LOG_EXAMPLES)
 
     for epoch in range(1, cfg.EPOCHS + 1):
         t0 = time.time()
@@ -443,22 +510,44 @@ def fit():
 
         ppl = perplexity(val_loss)
         lr_now = scheduler.get_last_lr()[0]
-        print(f"[Epoch {epoch:02d}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | PPL: {ppl:.2f} | Acc: {val_acc:.2f}% | Time: {dt:.1f}s | LR: {lr_now:.6g}")
+        print(f"[Epoch {epoch:02d}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | PPL: {ppl:.2f} | "
+              f"Acc: {val_acc:.2f}% | Time: {dt:.1f}s | LR: {lr_now:.6g}")
 
-        # Print sample generations WITH TITLE and extra metrics
+        # ----- Epoch-level text metrics (generation-based) -----
+        metrics_avg = evaluate_text_metrics_epoch(
+            model=model,
+            sp=sp,
+            df=val_ds.df,
+            device=cfg.DEVICE,
+            max_new_tokens=cfg.MAX_NEW_TOKENS,
+            sample_size=cfg.METRIC_EVAL_SAMPLES,
+            seed=cfg.METRIC_EVAL_SEED + epoch  # vary by epoch, but reproducibly
+        )
+        print("  Epoch Text Metrics (avg over sampled val): "
+              f"Jaccard: {metrics_avg['Jaccard']:.2f}% | Cosine: {metrics_avg['Cosine']:.2f}% | "
+              f"ROUGE-L(F1): {metrics_avg['ROUGE-L']:.2f}% | BLEU-4: {metrics_avg['BLEU-4']:.2f}% | "
+              f"EM: {metrics_avg['EM']:.2f}%")
+
+        # ----- Fixed anchor examples + a small rotating sample for qualitative sanity -----
         try:
-            for i in range(min(cfg.LOG_EXAMPLES, len(val_ds))):
-                title = val_ds.df.iloc[i]["input"]     # recipe title / input text
+            indices = list(anchor_idx)
+            pool = [i for i in range(len(val_ds)) if i not in anchor_idx]
+            rot_needed = max(0, cfg.LOG_EXAMPLES - len(indices))
+            rng = random.Random(cfg.SHUFFLE_SEED + epoch)
+            indices += rng.sample(pool, k=min(rot_needed, len(pool)))
+
+            for j, i in enumerate(indices, 1):
+                title = val_ds.df.iloc[i]["input"]     # "recipe title" / input text
                 gold_text = val_ds.df.iloc[i]["target"]
                 pred_text = greedy_generate(model, sp, title, cfg.DEVICE, max_new_tokens=cfg.MAX_NEW_TOKENS)
 
-                jac = jaccard_from_texts(pred_text, gold_text)
-                cos = cosine_similarity_from_texts(pred_text, gold_text)
-                rl  = rouge_l_f1_from_texts(pred_text, gold_text)
+                jac  = jaccard_from_texts(pred_text, gold_text)
+                cos  = cosine_similarity_from_texts(pred_text, gold_text)
+                rl   = rouge_l_f1_from_texts(pred_text, gold_text)
                 bleu = bleu_from_texts(pred_text, gold_text, max_n=4)
-                em = 100.0 if pred_text.strip() == str(gold_text).strip() else 0.0
+                em   = 100.0 if pred_text.strip() == str(gold_text).strip() else 0.0
 
-                print(f"  Example {i+1}:")
+                print(f"  Example {j}:")
                 print(f"    Title: {title}")
                 print(f"    Pred:  {pred_text}")
                 print(f"    Gold:  {gold_text}")
