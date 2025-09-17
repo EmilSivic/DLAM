@@ -51,7 +51,7 @@ class Config:
 
     # Generation/logging
     MAX_NEW_TOKENS: int = 128
-    LOG_EXAMPLES: int = 3               # how many examples to print per epoch
+    LOG_EXAMPLES: int = 10               # how many examples to print per epoch
     DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Epoch-level text-metric evaluation (generation-based)
