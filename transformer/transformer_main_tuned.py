@@ -14,17 +14,20 @@ import pandas as pd
 import sentencepiece as spm
 
 from transformer_model_tuned import Seq2SeqTransformerTuned  # same folder
-# If your project uses a package like "from transformer.transformer_model_tuned import ...",
-# change the import above accordingly.
+
 
 # -----------------------
 # Config (edit as needed)
 # -----------------------
 @dataclass
 class Config:
-    TRAIN_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"     # expects columns: input, target
-    VAL_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"
+    # Single dataset to load and split
+    DATA_CSV: str = "/content/drive/MyDrive/DLAM_Project/data/processed_recipes.csv"  # expects columns: input, target
     SPM_MODEL: str = "/content/drive/MyDrive/DLAM_Project/data/spm_recipes.model"     # SentencePiece model path
+
+    # Data split
+    VAL_FRACTION: float = 0.05     # 5% for validation
+    SHUFFLE_SEED: int = 42         # for reproducible split
 
     # Model
     EMB_SIZE: int = 512
@@ -56,9 +59,11 @@ cfg = Config()
 # Data
 # -----------------------
 class RecipeDatasetSP(Dataset):
-    def __init__(self, csv_path: str, sp: spm.SentencePieceProcessor):
-        self.df = pd.read_csv(csv_path)
-        assert {"input", "target"}.issubset(self.df.columns), "CSV must have 'input' and 'target' columns"
+    """Takes a pre-sliced DataFrame (train or val) and a SentencePiece processor."""
+    def __init__(self, df: pd.DataFrame, sp: spm.SentencePieceProcessor):
+        assert {"input", "target"}.issubset(df.columns), "CSV must have 'input' and 'target' columns"
+        # Keep only needed cols, drop NaNs just in case
+        self.df = df[["input", "target"]].dropna().reset_index(drop=True)
         self.sp = sp
 
         # id safety
@@ -300,11 +305,24 @@ def fit():
         raise FileNotFoundError(f"SentencePiece model not found at '{cfg.SPM_MODEL}'")
     sp = spm.SentencePieceProcessor(model_file=cfg.SPM_MODEL)
 
-    # Data
-    train_ds = RecipeDatasetSP(cfg.TRAIN_CSV, sp)
-    val_ds = RecipeDatasetSP(cfg.VAL_CSV, sp)
+    # Load single dataset and split
+    if not os.path.exists(cfg.DATA_CSV):
+        raise FileNotFoundError(f"Data CSV not found at '{cfg.DATA_CSV}'")
+    full_df = pd.read_csv(cfg.DATA_CSV)[["input", "target"]].dropna()
+    full_df = full_df.sample(frac=1.0, random_state=cfg.SHUFFLE_SEED).reset_index(drop=True)
+
+    # Safe bounds on val fraction
+    val_frac = min(max(cfg.VAL_FRACTION, 0.0), 0.5)
+    split_idx = int(len(full_df) * (1.0 - val_frac))
+    train_df = full_df.iloc[:split_idx].copy()
+    val_df = full_df.iloc[split_idx:].copy()
+
+    # Datasets
+    train_ds = RecipeDatasetSP(train_df, sp)
+    val_ds = RecipeDatasetSP(val_df, sp)
     pad_id = train_ds.pad_id
 
+    # Loaders
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True, collate_fn=lambda b: collate_fn(b, pad_id))
     val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False, collate_fn=lambda b: collate_fn(b, pad_id))
 
@@ -313,7 +331,6 @@ def fit():
     assert pad_id_m == pad_id
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id, label_smoothing=cfg.LABEL_SMOOTHING)
 
-    global_step = 0
     for epoch in range(1, cfg.EPOCHS + 1):
         t0 = time.time()
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, scheduler, criterion, pad_id)
@@ -321,8 +338,6 @@ def fit():
         dt = time.time() - t0
 
         ppl = perplexity(val_loss)
-
-        # LR logging
         lr_now = scheduler.get_last_lr()[0]
         print(f"[Epoch {epoch:02d}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | PPL: {ppl:.2f} | Acc: {val_acc:.2f}% | Time: {dt:.1f}s | LR: {lr_now:.6g}")
 
