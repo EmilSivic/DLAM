@@ -1,16 +1,37 @@
+import math
 import torch
 import torch.nn as nn
-import math
+from typing import Optional
 
 
 class Seq2SeqTransformer(nn.Module):
-    def __init__(self, num_encoder_layers, num_decoder_layers,
-                 emb_size, nhead, src_vocab_size, tgt_vocab_size,
-                 dim_feedforward=512, dropout=0.1, pad_idx=0):
-        super(Seq2SeqTransformer, self).__init__()
-
+    """
+    A thin, practical wrapper around nn.Transformer with:
+      - token + positional embeddings
+      - convenience encode/decode
+      - final generator (linear to vocab)
+      - batch_first=True everywhere
+    """
+    def __init__(
+        self,
+        num_encoder_layers: int,
+        num_decoder_layers: int,
+        emb_size: int,
+        nhead: int,
+        src_vocab_size: int,
+        tgt_vocab_size: int,
+        dim_feedforward: int = 512,
+        dropout: float = 0.1,
+        pad_idx: int = 0,
+    ) -> None:
+        super().__init__()
         self.model_type = "Transformer"
         self.pad_idx = pad_idx
+
+        # Embeddings
+        self.src_tok_emb = nn.Embedding(src_vocab_size, emb_size, padding_idx=pad_idx)
+        self.tgt_tok_emb = nn.Embedding(tgt_vocab_size, emb_size, padding_idx=pad_idx)
+        self.positional_encoding = PositionalEncoding(emb_size, dropout)
 
         # Core Transformer
         self.transformer = nn.Transformer(
@@ -20,78 +41,90 @@ class Seq2SeqTransformer(nn.Module):
             num_decoder_layers=num_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
         )
 
-        # Output layer
+        # Output head
         self.generator = nn.Linear(emb_size, tgt_vocab_size)
 
-        # Embeddings
-        self.src_tok_emb = nn.Embedding(src_vocab_size, emb_size, padding_idx=pad_idx)
-        self.tgt_tok_emb = nn.Embedding(tgt_vocab_size, emb_size, padding_idx=pad_idx)
+    # ---- Convenience helpers ----
+    @staticmethod
+    def generate_square_subsequent_mask(sz: int, device: Optional[torch.device] = None) -> torch.Tensor:
+        """Standard masked (no-peek) causal mask for decoder inputs."""
+        mask = torch.triu(torch.full((sz, sz), float("-inf")), diagonal=1)
+        return mask if device is None else mask.to(device)
 
-        # Positional encoding
-        self.positional_encoding = PositionalEncoding(emb_size, dropout=dropout)
-
-        # Initialize
-        self._reset_parameters()
-
-        # Store hyperparams for logging
-        self.embedding_dim = emb_size
-        self.hidden_dim = dim_feedforward
-        self.num_layers = num_encoder_layers
-        self.dropout = dropout
-
-    def _reset_parameters(self):
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def _generate_square_subsequent_mask(self, sz: int, device):
-        """Generate a triangular causal mask for the decoder."""
-        mask = torch.triu(torch.ones(sz, sz, device=device)) == 1
-        mask = mask.transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
-        return mask
-
-    def forward(self, src, tgt, *args, **kwargs):
-        device = src.device
+    def encode(self, src: torch.Tensor, src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         src_emb = self.positional_encoding(self.src_tok_emb(src))
-        tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt))
-
-        tgt_seq_len = tgt.size(1)
-        tgt_mask = self._generate_square_subsequent_mask(tgt_seq_len, device)
-
-        src_padding_mask = (src == self.pad_idx)
-        tgt_padding_mask = (tgt == self.pad_idx)
-
-        outs = self.transformer(
-            src_emb, tgt_emb,
-            tgt_mask=tgt_mask,
-            src_key_padding_mask=src_padding_mask,
-            tgt_key_padding_mask=tgt_padding_mask,
-            memory_key_padding_mask=src_padding_mask
+        memory = self.transformer.encoder(
+            src_emb,
+            src_key_padding_mask=src_key_padding_mask,
         )
+        return memory
 
-        return self.generator(outs)
+    def decode(
+        self,
+        tgt: torch.Tensor,
+        memory: torch.Tensor,
+        tgt_mask: Optional[torch.Tensor] = None,
+        tgt_key_padding_mask: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt))
+        out = self.transformer.decoder(
+            tgt=tgt_emb,
+            memory=memory,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+            memory_key_padding_mask=memory_key_padding_mask,
+        )
+        return out  # return hidden states (apply generator outside)
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        tgt_in: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        tgt_key_padding_mask: Optional[torch.Tensor] = None,
+        tgt_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            src: [B, S]
+            tgt_in: [B, T] (teacher-forced input, shifted right)
+        Returns:
+            logits over tgt vocab: [B, T, V]
+        """
+        src_emb = self.positional_encoding(self.src_tok_emb(src))
+        tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt_in))
+
+        out = self.transformer(
+            src=src_emb,
+            tgt=tgt_emb,
+            src_key_padding_mask=src_key_padding_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+            memory_key_padding_mask=src_key_padding_mask,
+            tgt_mask=tgt_mask,
+        )
+        return self.generator(out)
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, emb_size, dropout, maxlen=5000):
-        super(PositionalEncoding, self).__init__()
-        den = torch.exp(- torch.arange(0, emb_size, 2) * math.log(10000) / emb_size)
-        pos = torch.arange(0, maxlen).reshape(maxlen, 1)
+    def __init__(self, emb_size: int, dropout: float = 0.1, maxlen: int = 5000) -> None:
+        super().__init__()
+        den = torch.exp(-torch.arange(0, emb_size, 2) * (math.log(10000.0) / emb_size))
+        pos = torch.arange(0, maxlen).unsqueeze(1)
         pos_embedding = torch.zeros((maxlen, emb_size))
         pos_embedding[:, 0::2] = torch.sin(pos * den)
         pos_embedding[:, 1::2] = torch.cos(pos * den)
-        pos_embedding = pos_embedding.unsqueeze(0)
-
-        self.dropout = nn.Dropout(dropout)
+        pos_embedding = pos_embedding.unsqueeze(0)  # [1, L, D]
         self.register_buffer("pos_embedding", pos_embedding)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, token_embedding: torch.Tensor):
-        return self.dropout(token_embedding + self.pos_embedding[:, :token_embedding.size(1), :])
+    def forward(self, token_emb: torch.Tensor) -> torch.Tensor:
+        # token_emb: [B, L, D]
+        return self.dropout(token_emb + self.pos_embedding[:, : token_emb.size(1), :])
 
 
-# === Alias for tuned variant ===
+# Backward-compatible alias
 Seq2SeqTransformerTuned = Seq2SeqTransformer
