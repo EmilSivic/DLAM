@@ -3,6 +3,7 @@ import math
 import time
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
+from collections import Counter
 
 import torch
 import torch.nn as nn
@@ -147,6 +148,22 @@ def parse_ingredients(text: str) -> List[str]:
     return [p.strip() for p in text.split(",") if p.strip()]
 
 
+def _fallback_word_tokens(text: str) -> List[str]:
+    # Basic whitespace tokenization as ultimate fallback
+    return [t for t in str(text).replace("\n", " ").split(" ") if t.strip()]
+
+
+def tokens_for_metrics(pred_text: str, gold_text: str) -> Tuple[List[str], List[str]]:
+    """
+    Use ingredient entries as tokens if parse_ingredients finds any; otherwise fallback to words.
+    """
+    pred_ing = parse_ingredients(pred_text)
+    gold_ing = parse_ingredients(gold_text)
+    if pred_ing or gold_ing:
+        return pred_ing, gold_ing
+    return _fallback_word_tokens(pred_text), _fallback_word_tokens(gold_text)
+
+
 def jaccard_from_texts(pred_text: str, gold_text: str) -> float:
     a = set(parse_ingredients(pred_text))
     b = set(parse_ingredients(gold_text))
@@ -155,6 +172,93 @@ def jaccard_from_texts(pred_text: str, gold_text: str) -> float:
     if not a or not b:
         return 0.0
     return 100.0 * len(a & b) / len(a | b)
+
+
+def cosine_similarity_from_texts(pred_text: str, gold_text: str) -> float:
+    hyp, ref = tokens_for_metrics(pred_text, gold_text)
+    if not hyp and not ref:
+        return 100.0
+    if not hyp or not ref:
+        return 0.0
+    ch, cr = Counter(hyp), Counter(ref)
+    # dot product
+    dot = sum(ch[t] * cr.get(t, 0) for t in ch)
+    # norms
+    nh = math.sqrt(sum(v * v for v in ch.values()))
+    nr = math.sqrt(sum(v * v for v in cr.values()))
+    if nh == 0 or nr == 0:
+        return 0.0
+    return 100.0 * (dot / (nh * nr))
+
+
+def _ngram_counts(seq: List[str], n: int) -> Counter:
+    if n <= 0 or len(seq) < n:
+        return Counter()
+    return Counter(tuple(seq[i:i+n]) for i in range(len(seq) - n + 1))
+
+
+def bleu_from_texts(pred_text: str, gold_text: str, max_n: int = 4) -> float:
+    """
+    BLEU-N with add-1 smoothing and standard brevity penalty.
+    Computed over ingredient tokens (preferred) or word tokens (fallback).
+    """
+    hyp, ref = tokens_for_metrics(pred_text, gold_text)
+    len_h, len_r = len(hyp), len(ref)
+    if len_h == 0 and len_r == 0:
+        return 100.0
+    if len_h == 0:
+        return 0.0
+
+    precisions = []
+    for n in range(1, max_n + 1):
+        ch = _ngram_counts(hyp, n)
+        cr = _ngram_counts(ref, n)
+        if sum(ch.values()) == 0:
+            precisions.append(0.0)
+            continue
+        overlap = sum(min(cnt, cr.get(ng, 0)) for ng, cnt in ch.items())
+        # add-1 smoothing
+        p_n = (overlap + 1.0) / (sum(ch.values()) + 1.0)
+        precisions.append(p_n)
+
+    # geometric mean of precisions
+    gm = math.exp(sum(math.log(p) for p in precisions if p > 0) / max(1, len([p for p in precisions if p > 0])))
+    # brevity penalty
+    bp = 1.0 if len_h > len_r else math.exp(1.0 - (len_r / max(1, len_h)))
+    return 100.0 * bp * gm
+
+
+def _lcs_len(a: List[str], b: List[str]) -> int:
+    # LCS via DP, O(n*m) but sequences here are short
+    n, m = len(a), len(b)
+    if n == 0 or m == 0:
+        return 0
+    dp = [0] * (m + 1)
+    for i in range(1, n + 1):
+        prev = 0
+        for j in range(1, m + 1):
+            tmp = dp[j]
+            if a[i - 1] == b[j - 1]:
+                dp[j] = prev + 1
+            else:
+                dp[j] = max(dp[j], dp[j - 1])
+            prev = tmp
+    return dp[m]
+
+
+def rouge_l_f1_from_texts(pred_text: str, gold_text: str) -> float:
+    hyp, ref = tokens_for_metrics(pred_text, gold_text)
+    if not hyp and not ref:
+        return 100.0
+    if not hyp or not ref:
+        return 0.0
+    lcs = _lcs_len(hyp, ref)
+    prec = lcs / len(hyp) if len(hyp) else 0.0
+    rec = lcs / len(ref) if len(ref) else 0.0
+    if prec + rec == 0:
+        return 0.0
+    f1 = (2 * prec * rec) / (prec + rec)
+    return 100.0 * f1
 
 
 # -----------------------
@@ -341,15 +445,24 @@ def fit():
         lr_now = scheduler.get_last_lr()[0]
         print(f"[Epoch {epoch:02d}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | PPL: {ppl:.2f} | Acc: {val_acc:.2f}% | Time: {dt:.1f}s | LR: {lr_now:.6g}")
 
-        # Print sample generations
+        # Print sample generations WITH TITLE and extra metrics
         try:
             for i in range(min(cfg.LOG_EXAMPLES, len(val_ds))):
-                sample_inp = val_ds.df.iloc[i]["input"]
+                title = val_ds.df.iloc[i]["input"]     # recipe title / input text
                 gold_text = val_ds.df.iloc[i]["target"]
-                pred_text = greedy_generate(model, sp, sample_inp, cfg.DEVICE, max_new_tokens=cfg.MAX_NEW_TOKENS)
+                pred_text = greedy_generate(model, sp, title, cfg.DEVICE, max_new_tokens=cfg.MAX_NEW_TOKENS)
+
                 jac = jaccard_from_texts(pred_text, gold_text)
+                cos = cosine_similarity_from_texts(pred_text, gold_text)
+                rl  = rouge_l_f1_from_texts(pred_text, gold_text)
+                bleu = bleu_from_texts(pred_text, gold_text, max_n=4)
                 em = 100.0 if pred_text.strip() == str(gold_text).strip() else 0.0
-                print(f"  Example {i+1}:\n    Pred: {pred_text}\n    Gold: {gold_text}\n    Jaccard: {jac:.2f}% | EM: {em:.2f}%")
+
+                print(f"  Example {i+1}:")
+                print(f"    Title: {title}")
+                print(f"    Pred:  {pred_text}")
+                print(f"    Gold:  {gold_text}")
+                print(f"    Metrics -> Jaccard: {jac:.2f}% | Cosine: {cos:.2f}% | ROUGE-L(F1): {rl:.2f}% | BLEU-4: {bleu:.2f}% | EM: {em:.2f}%")
         except Exception as e:
             print(f"(Skipping example print due to error: {e})")
 
